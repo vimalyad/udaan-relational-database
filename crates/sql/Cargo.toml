@@ -10,6 +10,7 @@ crdt = { path = "../crdt" }
 query = { path = "../query" }
 index = { path = "../index" }
 transaction = { path = "../transaction" }
+replication = { path = "../replication" }
 sqlparser = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
