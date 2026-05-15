@@ -26,8 +26,8 @@ pub fn merge_frontiers(a: &Frontier, b: &Frontier) -> Frontier {
 }
 
 /// Update a peer's entry in a frontier.
-pub fn frontier_update(frontier: &mut Frontier, peer: &PeerId, counter: u64) {
-    let entry = frontier.entry(peer.clone()).or_insert(0);
+pub fn frontier_update(frontier: &mut Frontier, peer: &str, counter: u64) {
+    let entry = frontier.entry(peer.to_string()).or_insert(0);
     if counter > *entry {
         *entry = counter;
     }

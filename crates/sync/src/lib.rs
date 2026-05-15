@@ -1,123 +1,214 @@
-//! Anti-entropy sync engine. Phase 4 implementation.
-//! Provides pairwise, bidirectional, replay-safe synchronization.
+//! Anti-entropy sync engine.
+//! Provides pairwise, bidirectional, replay-safe, idempotent synchronization.
+//!
+//! Sync invariants:
+//! - Replay-safe: sync(A,B) twice produces same result as once
+//! - Order-independent: sync(A,B) then sync(B,C) == sync(B,C) then sync(A,B)
+//! - Convergent: repeated pairwise syncs reach quiescence
 
-use core::error::{CrdtError, CrdtResult};
-use core::types::{Frontier, PeerId, RowDelta, SyncDelta, TableId, Tombstone, UniquenessClaim};
-use core::utils::{frontier_update, merge_frontiers};
-use crdt::merge::{merge_row, merge_table};
-use crdt::{TombstoneStore, UniquenessRegistry};
-use replication::ReplicaState;
-use std::collections::BTreeMap;
+pub mod delta;
+pub mod session;
 
-/// Extract a SyncDelta from a replica: rows/tombstones/claims that the remote
-/// peer hasn't seen yet (based on frontier comparison).
-pub fn extract_delta(replica: &ReplicaState, remote_frontier: &Frontier) -> SyncDelta {
-    let mut rows: Vec<RowDelta> = Vec::new();
+pub use delta::{apply_delta, extract_delta};
+pub use session::sync_peers;
 
-    for table_name in replica.storage.table_names() {
-        if let Some(table) = replica.storage.snapshot_table(&table_name) {
-            for row in table.values() {
-                // Include row if any of its cell versions are newer than the remote frontier knows
-                let row_is_new = row.cells.values().any(|cell| {
-                    let peer_frontier_counter = remote_frontier.get(&cell.version.peer_id).copied().unwrap_or(0);
-                    cell.version.counter > peer_frontier_counter
-                }) || row.delete_version.as_ref().map_or(false, |dv| {
-                    let peer_frontier_counter = remote_frontier.get(&dv.peer_id).copied().unwrap_or(0);
-                    dv.counter > peer_frontier_counter
-                });
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::types::{Cell, Row, Tombstone, Value, Version};
+    use crdt::{LamportClock, TombstoneStore, UniquenessRegistry};
+    use replication::ReplicaState;
 
-                if row_is_new {
-                    rows.push(RowDelta { table_id: table_name.clone(), row: row.clone() });
-                }
-            }
-        }
+    fn text_row(id: &str, col: &str, val: &str, counter: u64, peer: &str) -> Row {
+        let mut row = Row::new(id);
+        row.cells.insert(
+            col.to_string(),
+            Cell::new(Value::Text(val.to_string()), Version::new(counter, peer.to_string())),
+        );
+        row
     }
 
-    // Include tombstones not yet seen by remote
-    let tombstones: Vec<Tombstone> = replica.tombstones.all()
-        .filter(|ts| {
-            let peer_counter = remote_frontier.get(&ts.version.peer_id).copied().unwrap_or(0);
-            ts.version.counter > peer_counter
-        })
-        .cloned()
-        .collect();
-
-    // Include uniqueness claims
-    let uniqueness_claims: Vec<UniquenessClaim> = replica.uniqueness.all_claims().cloned().collect();
-
-    SyncDelta {
-        source_peer: replica.peer_id.clone(),
-        rows,
-        tombstones,
-        uniqueness_claims,
-        frontier: replica.frontier.clone(),
+    fn setup_peer(peer_id: &str) -> ReplicaState {
+        let mut p = ReplicaState::new(peer_id);
+        p.storage.create_table("users");
+        p.storage.create_table("orders");
+        p
     }
-}
 
-/// Apply a received SyncDelta to a replica.
-/// This is replay-safe, idempotent, and order-independent.
-pub fn apply_delta(replica: &mut ReplicaState, delta: &SyncDelta) -> CrdtResult<()> {
-    // Merge rows
-    for row_delta in &delta.rows {
-        let table_id = &row_delta.table_id;
+    #[test]
+    fn basic_sync_propagates_rows() {
+        let mut a = setup_peer("A");
+        let mut b = setup_peer("B");
 
-        // Ensure table exists in storage
-        if !replica.storage.table_exists(table_id) {
-            replica.storage.create_table(table_id);
-        }
+        let row = text_row("u1", "name", "Alice", 1, "A");
+        a.clock.tick();
+        a.storage.upsert_row("users", row).unwrap();
+        core::utils::frontier_update(&mut a.frontier, "A", a.clock.counter);
 
-        let existing = replica.storage.get_row(table_id, &row_delta.row.id).cloned();
-        let merged = match existing {
-            Some(existing_row) => merge_row(&existing_row, &row_delta.row),
-            None => row_delta.row.clone(),
+        sync_peers(&mut a, &mut b).unwrap();
+
+        let got = b.storage.get_visible_row("users", "u1").unwrap();
+        assert_eq!(got.cells["name"].value, Value::Text("Alice".to_string()));
+    }
+
+    #[test]
+    fn sync_is_bidirectional() {
+        let mut a = setup_peer("A");
+        let mut b = setup_peer("B");
+
+        let row_a = text_row("u1", "name", "Alice", 1, "A");
+        a.clock.tick();
+        a.storage.upsert_row("users", row_a).unwrap();
+        core::utils::frontier_update(&mut a.frontier, "A", a.clock.counter);
+
+        let row_b = text_row("u2", "name", "Bob", 1, "B");
+        b.clock.tick();
+        b.storage.upsert_row("users", row_b).unwrap();
+        core::utils::frontier_update(&mut b.frontier, "B", b.clock.counter);
+
+        sync_peers(&mut a, &mut b).unwrap();
+
+        // Both should have both rows
+        assert!(a.storage.get_visible_row("users", "u2").is_some());
+        assert!(b.storage.get_visible_row("users", "u1").is_some());
+    }
+
+    #[test]
+    fn sync_is_idempotent() {
+        let mut a = setup_peer("A");
+        let mut b = setup_peer("B");
+
+        let row = text_row("u1", "name", "Alice", 1, "A");
+        a.clock.tick();
+        a.storage.upsert_row("users", row).unwrap();
+        core::utils::frontier_update(&mut a.frontier, "A", a.clock.counter);
+
+        sync_peers(&mut a, &mut b).unwrap();
+        sync_peers(&mut a, &mut b).unwrap(); // second sync — idempotent
+
+        assert_eq!(b.storage.visible_count("users"), 1);
+    }
+
+    #[test]
+    fn sync_propagates_tombstones() {
+        let mut a = setup_peer("A");
+        let mut b = setup_peer("B");
+
+        // Insert u1 on B first
+        let row = text_row("u1", "name", "Alice", 1, "B");
+        b.clock.tick();
+        b.storage.upsert_row("users", row).unwrap();
+        core::utils::frontier_update(&mut b.frontier, "B", b.clock.counter);
+
+        // A deletes u1 (with tombstone)
+        let dv = Version::new(2, "A".to_string());
+        let mut deleted_row = text_row("u1", "name", "Alice", 1, "B");
+        deleted_row.deleted = true;
+        deleted_row.delete_version = Some(dv.clone());
+        a.clock.tick();
+        a.clock.tick();
+        a.storage.upsert_row("users", deleted_row).unwrap();
+        a.tombstones.insert(Tombstone { row_id: "u1".to_string(), table_id: "users".to_string(), version: dv });
+        core::utils::frontier_update(&mut a.frontier, "A", a.clock.counter);
+
+        sync_peers(&mut a, &mut b).unwrap();
+
+        // After sync, u1 should be tombstoned on both
+        let row_b = b.storage.get_row("users", "u1").unwrap();
+        assert!(row_b.deleted, "tombstone must propagate");
+        assert!(b.tombstones.contains("users", "u1"));
+    }
+
+    #[test]
+    fn sync_cell_level_merge() {
+        let mut a = setup_peer("A");
+        let mut b = setup_peer("B");
+
+        // A and B both insert u1, A sets name, B sets email
+        let mut row_a = Row::new("u1");
+        row_a.cells.insert("name".to_string(), Cell::new(
+            Value::Text("Alice Cooper".to_string()), Version::new(10, "A".to_string())));
+        a.clock.counter = 10;
+        a.storage.upsert_row("users", row_a).unwrap();
+        core::utils::frontier_update(&mut a.frontier, "A", 10);
+
+        let mut row_b = Row::new("u1");
+        row_b.cells.insert("email".to_string(), Cell::new(
+            Value::Text("alice@ex.org".to_string()), Version::new(8, "B".to_string())));
+        b.clock.counter = 8;
+        b.storage.upsert_row("users", row_b).unwrap();
+        core::utils::frontier_update(&mut b.frontier, "B", 8);
+
+        sync_peers(&mut a, &mut b).unwrap();
+
+        // Both should have both columns
+        let row = a.storage.get_visible_row("users", "u1").unwrap();
+        assert!(row.cells.contains_key("name"), "name column must survive");
+        assert!(row.cells.contains_key("email"), "email column must survive");
+    }
+
+    #[test]
+    fn sync_order_independence() {
+        // A->B->C converges same as B->C->A
+        let mut a1 = setup_peer("A");
+        let mut b1 = setup_peer("B");
+        let mut c1 = setup_peer("C");
+
+        let mut a2 = setup_peer("A");
+        let mut b2 = setup_peer("B");
+        let mut c2 = setup_peer("C");
+
+        let setup = |a: &mut ReplicaState, b: &mut ReplicaState, c: &mut ReplicaState| {
+            let row_a = text_row("u1", "name", "Alice", 3, "A");
+            a.clock.counter = 3;
+            a.storage.upsert_row("users", row_a).unwrap();
+            core::utils::frontier_update(&mut a.frontier, "A", 3);
+
+            let row_b = text_row("u2", "name", "Bob", 2, "B");
+            b.clock.counter = 2;
+            b.storage.upsert_row("users", row_b).unwrap();
+            core::utils::frontier_update(&mut b.frontier, "B", 2);
+
+            let row_c = text_row("u3", "name", "Charlie", 1, "C");
+            c.clock.counter = 1;
+            c.storage.upsert_row("users", row_c).unwrap();
+            core::utils::frontier_update(&mut c.frontier, "C", 1);
         };
 
-        replica.storage.upsert_row(table_id, merged)?;
+        setup(&mut a1, &mut b1, &mut c1);
+        setup(&mut a2, &mut b2, &mut c2);
+
+        // Order 1: A↔B, B↔C, A↔C
+        sync_peers(&mut a1, &mut b1).unwrap();
+        sync_peers(&mut b1, &mut c1).unwrap();
+        sync_peers(&mut a1, &mut c1).unwrap();
+
+        // Order 2: B↔C, A↔C, A↔B
+        sync_peers(&mut b2, &mut c2).unwrap();
+        sync_peers(&mut a2, &mut c2).unwrap();
+        sync_peers(&mut a2, &mut b2).unwrap();
+
+        // All should have same 3 rows
+        for peer in [&a1, &b1, &c1, &a2, &b2, &c2] {
+            assert_eq!(peer.storage.visible_count("users"), 3);
+        }
     }
 
-    // Merge tombstones
-    let mut incoming_ts_store = TombstoneStore::new();
-    for ts in &delta.tombstones {
-        incoming_ts_store.insert(ts.clone());
+    #[test]
+    fn sync_quiescence() {
+        let mut a = setup_peer("A");
+        let mut b = setup_peer("B");
+
+        let row = text_row("u1", "x", "val", 1, "A");
+        a.clock.tick();
+        a.storage.upsert_row("users", row).unwrap();
+        core::utils::frontier_update(&mut a.frontier, "A", a.clock.counter);
+
+        sync_peers(&mut a, &mut b).unwrap();
+
+        // After quiescence, extracting delta again should yield empty rows
+        let delta = extract_delta(&a, &b.frontier);
+        assert!(delta.rows.is_empty(), "no new rows after quiescence");
+        assert!(delta.tombstones.is_empty());
     }
-    replica.tombstones.merge(&incoming_ts_store);
-
-    // Merge uniqueness claims
-    let mut incoming_uniqueness = UniquenessRegistry::new();
-    for claim in &delta.uniqueness_claims {
-        incoming_uniqueness.claim(
-            &claim.table_id,
-            &claim.column_id,
-            &claim.value,
-            &claim.owner_row,
-            claim.version.clone(),
-        );
-    }
-    replica.uniqueness.merge(&incoming_uniqueness);
-
-    // Advance clock from remote frontier
-    replica.clock.update_from_frontier(&delta.frontier);
-
-    // Merge frontiers
-    replica.frontier = merge_frontiers(&replica.frontier, &delta.frontier);
-
-    // Update our own frontier entry
-    frontier_update(&mut replica.frontier, &replica.peer_id, replica.clock.counter);
-
-    Ok(())
-}
-
-/// Perform a full pairwise bidirectional sync between two replicas.
-/// After this call, both replicas have seen all each other's state.
-/// This function is called repeatedly until quiescence (no new deltas exchanged).
-pub fn sync_peers(a: &mut ReplicaState, b: &mut ReplicaState) -> CrdtResult<()> {
-    // Extract deltas based on current frontiers
-    let delta_for_b = extract_delta(a, &b.frontier);
-    let delta_for_a = extract_delta(b, &a.frontier);
-
-    // Apply deltas
-    apply_delta(b, &delta_for_b)?;
-    apply_delta(a, &delta_for_a)?;
-
-    Ok(())
 }
