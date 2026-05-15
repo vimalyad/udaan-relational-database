@@ -537,3 +537,262 @@
    - AP-oriented architecture
    - prioritizes availability and partition tolerance
    - relaxes strong global consistency in favor of deterministic eventual convergence
+
+
+16. Query Consistency Semantics
+ - Local canonical replica read semantics
+
+ - Query Model:
+   - queries execute entirely against the local materialized replica state
+   - reads never require network coordination
+   - query visibility depends on the local synchronization frontier
+
+ - Read Semantics:
+   - queries observe:
+       - locally merged rows
+       - local tombstones
+       - locally resolved uniqueness conflicts
+       - locally rebuilt deterministic indexes
+
+ - Consistency Guarantees:
+   - deterministic local query execution
+   - eventual global convergence after synchronization
+   - stable local snapshot-style reads during query execution
+
+ - Non-Guarantees:
+   - no globally synchronized reads
+   - no linearizable cross-peer visibility
+   - replicas may temporarily observe different states before sync
+
+ - Example:
+   - peer A locally sees:
+       { name: "Alice" }
+
+   - peer B locally sees:
+       { email: "alice@x.com" }
+
+   - after synchronization:
+       both replicas deterministically converge to:
+       {
+         name: "Alice",
+         email: "alice@x.com"
+       }
+
+ - Design Reasons:
+   - compatible with offline-first/disconnected operation
+   - avoids blocking reads on network availability
+   - preserves low-latency local query execution
+   - aligns naturally with AP-oriented CRDT architecture
+   - deterministic convergence guarantees eventual consistency
+   - simplifies distributed query semantics
+   - avoids coordination-heavy strong consistency protocols
+   - naturally compatible with local materialized replica storage
+
+
+17. SQL / Query Engine Scope
+ - Minimal deterministic SQL subset
+
+ - Goal:
+   - provide practical relational database semantics
+   - while prioritizing deterministic replicated behavior over advanced SQL complexity
+
+ - Supported Schema Features:
+   - CREATE TABLE
+   - PRIMARY KEY
+   - UNIQUE
+   - FOREIGN KEY
+   - CREATE INDEX
+
+ - Supported Write Operations:
+   - INSERT
+   - UPDATE
+   - DELETE
+
+ - Supported Read Operations:
+   - SELECT
+   - WHERE
+   - ORDER BY
+   - LIMIT
+
+ - Optional Initial Support:
+   - simple INNER JOIN queries
+
+ - Explicitly Unsupported Initially:
+   - distributed joins
+   - recursive queries
+   - window functions
+   - triggers
+   - stored procedures
+   - query planner optimization
+   - serializable distributed transactions
+   - advanced analytical SQL features
+
+ - Query Execution Model:
+   - SQL parsed into deterministic logical operations
+   - execution occurs entirely on local canonical replica state
+   - queries use deterministic indexes and materialized rows
+
+ - Internal Execution Pipeline:
+   - SQL
+       -> AST
+       -> logical relational operation
+       -> local replica execution engine
+       -> deterministic result generation
+
+ - Parser Strategy:
+   - use existing Rust SQL parser ecosystem
+   - recommended parser:
+       sqlparser-rs
+
+ - Execution Strategy:
+   - table scans
+   - deterministic index scans
+   - local filtering/sorting
+   - simple relational execution pipeline
+
+ - Design Reasons:
+   - focuses implementation effort on replicated relational semantics
+   - avoids complexity of full SQL engine development
+   - benchmark-friendly and realistically implementable
+   - deterministic execution simplifies convergence guarantees
+   - compatible with local-first/offline-first architecture
+   - easier correctness reasoning and debugging
+   - extensible toward future advanced SQL support
+
+
+18. Internal Module Architecture
+ - Layered modular distributed database architecture
+
+ - High-Level Execution Flow:
+   - client/sql
+       -> parser
+       -> query engine
+       -> transaction layer
+       -> CRDT/replication engine
+       -> storage engine
+
+ - Core Rust Module Structure:
+   - src/
+       ├── sql/
+       ├── parser/
+       ├── query/
+       ├── storage/
+       ├── crdt/
+       ├── replication/
+       ├── sync/
+       ├── index/
+       ├── transaction/
+       ├── gc/
+       ├── hashing/
+       ├── metadata/
+       ├── network/
+       └── tests/
+
+ - Module Responsibilities:
+
+   - parser/
+       - SQL parsing
+       - AST generation
+       - integration with sqlparser-rs
+
+   - query/
+       - deterministic local query execution
+       - filtering
+       - sorting
+       - joins
+       - index/table scans
+
+   - storage/
+       - physical persistence
+       - row serialization/deserialization
+       - local storage layout
+       - metadata persistence
+
+   - crdt/
+       - cell merge semantics
+       - Lamport ordering
+       - tombstone logic
+       - uniqueness reconciliation
+       - deterministic conflict resolution
+
+   - replication/
+       - frontier tracking
+       - delta extraction
+       - reconciliation orchestration
+
+   - sync/
+       - peer synchronization sessions
+       - handshake flow
+       - sync payload exchange
+       - transport abstraction
+
+   - index/
+       - deterministic derived index maintenance
+       - rebuild/update logic
+       - range query support
+
+   - transaction/
+       - local transaction batching
+       - commit/rollback handling
+       - row-level atomicity
+
+   - gc/
+       - tombstone garbage collection
+       - causal stability checks
+
+   - hashing/
+       - canonical serialization
+       - snapshot hashing
+       - convergence verification
+
+   - metadata/
+       - peer frontier metadata
+       - replica IDs
+       - schema metadata
+       - synchronization metadata
+
+   - network/
+       - WASM/browser transport layer
+       - websocket/p2p abstractions
+       - transport APIs
+       - no CRDT merge logic
+
+ - Core Data Structures:
+
+   - Row:
+       struct Row {
+           id: RowId,
+           cells: HashMap<ColumnId, Cell>,
+           deleted: bool,
+       }
+
+   - Cell:
+       struct Cell {
+           value: Value,
+           version: Version,
+       }
+
+   - Version:
+       struct Version {
+           counter: u64,
+           peer_id: PeerId,
+       }
+
+   - Frontier:
+       type Frontier = HashMap<PeerId, u64>;
+
+ - Design Principles:
+   - deterministic merge semantics isolated from networking layer
+   - clear ownership boundaries between modules
+   - transport-independent CRDT logic
+   - modular extensibility for future optimizations
+   - deterministic testing and replayability
+   - implementation scalability across contributors
+
+ - Design Reasons:
+   - simplifies parallel implementation
+   - improves maintainability and debugging
+   - isolates distributed systems complexity
+   - enables deterministic unit/integration testing
+   - supports future networking/storage replacements
+   - aligns naturally with layered database engine architecture
