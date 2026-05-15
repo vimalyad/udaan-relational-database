@@ -189,23 +189,9 @@ impl SqlExecutor {
                 return Err(CrdtError::PrimaryKeyViolation(row_id, table_name.clone()));
             }
 
-            // FK checks (tombstone policy: tombstoned parents count as existing)
-            for fk in &schema.foreign_keys {
-                if let Some(fk_val) = cells.get(&fk.column) {
-                    if *fk_val != Value::Null {
-                        let ref_id = fk_val.to_string();
-                        if replica.storage.get_row(&fk.ref_table, &ref_id).is_none() {
-                            return Err(CrdtError::ForeignKeyViolation {
-                                table: fk.ref_table.clone(),
-                                row: ref_id,
-                            });
-                        }
-                    }
-                }
-            }
-
-            // Uniqueness violations are resolved by the CRDT claim protocol at merge/query
-            // time — no immediate rejection here (partition-tolerant design).
+            // FK and UNIQUE violations are resolved at merge/query time — no immediate
+            // rejection here. FK enforcement at INSERT time breaks partition tolerance:
+            // the referenced row may exist on a peer that hasn't synced yet.
 
             validated.push((row_id, cells));
         }
@@ -297,20 +283,8 @@ impl SqlExecutor {
                     }
                 }
 
-                // FK check for FK column updates
-                for fk in &schema.foreign_keys {
-                    if fk.column == col_name && new_val != Value::Null {
-                        let ref_id = new_val.to_string();
-                        if replica.storage.get_row(&fk.ref_table, &ref_id).is_none() {
-                            return Err(CrdtError::ForeignKeyViolation {
-                                table: fk.ref_table.clone(),
-                                row: ref_id,
-                            });
-                        }
-                    }
-                }
-
-                // Uniqueness for UPDATE: CRDT claim protocol handles conflicts at merge/query time.
+                // FK and UNIQUE for UPDATE: CRDT claim protocol / tombstone policy handles
+                // conflicts at merge/query time — no immediate rejection (partition-tolerant).
 
                 new_vals.push((col_name, new_val));
             }
