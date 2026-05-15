@@ -18,15 +18,16 @@ from pathlib import Path
 def _find_binary():
     """Find the anvil binary in release or debug build."""
     root = Path(__file__).parent.parent
+    exe = ".exe" if sys.platform == "win32" else ""
     candidates = [
-        root / "target" / "release" / "anvil",
-        root / "target" / "debug" / "anvil",
+        root / "target" / "release" / f"anvil{exe}",
+        root / "target" / "debug" / f"anvil{exe}",
     ]
     for p in candidates:
         if p.exists():
             return str(p)
     raise FileNotFoundError(
-        f"anvil binary not found. Run: cargo build --release -p adapter\n"
+        f"anvil binary not found. Run: cargo build --release\n"
         f"Searched: {[str(p) for p in candidates]}"
     )
 
