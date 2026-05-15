@@ -1,0 +1,16 @@
+[package]
+name = "sql"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+core = { path = "../core" }
+storage = { path = "../storage" }
+crdt = { path = "../crdt" }
+query = { path = "../query" }
+index = { path = "../index" }
+transaction = { path = "../transaction" }
+sqlparser = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }

@@ -1,0 +1,37 @@
+[workspace]
+members = [
+    "crates/core",
+    "crates/crdt",
+    "crates/storage",
+    "crates/replication",
+    "crates/sync",
+    "crates/query",
+    "crates/sql",
+    "crates/index",
+    "crates/transaction",
+    "crates/hashing",
+    "crates/gc",
+    "crates/metadata",
+    "crates/network",
+    "crates/adapter",
+    "crates/wasm-runtime",
+]
+resolver = "2"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+blake3 = "1"
+thiserror = "2"
+anyhow = "1"
+sqlparser = "0.54"
+tokio = { version = "1", features = ["full"] }
+uuid = { version = "1", features = ["v4"] }
+wasm-bindgen = "0.2"
+hex = "0.4"
+ciborium = "0.2"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

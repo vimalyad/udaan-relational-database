@@ -1,0 +1,10 @@
+[package]
+name = "crdt"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+core = { path = "../core" }
+serde = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
