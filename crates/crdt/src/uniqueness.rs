@@ -103,17 +103,22 @@ impl UniquenessRegistry {
                     existing.version = other_claim.version.clone();
                     existing.losers = all_losers;
                 } else {
-                    // Incumbent wins — add other's owner to losers if not already there
-                    let already = existing.losers.iter().any(|l| l.row_id == other_claim.owner_row);
-                    if !already && other_claim.owner_row != existing.owner_row {
-                        existing.losers.push(LooserEntry {
-                            row_id: other_claim.owner_row.clone(),
-                            version: other_claim.version.clone(),
-                        });
-                        for l in &other_claim.losers {
-                            if !existing.losers.iter().any(|e| e.row_id == l.row_id) {
-                                existing.losers.push(l.clone());
-                            }
+                    // Incumbent wins (or same version/owner — idempotent merge).
+                    // Always merge losers from the other claim into ours.
+                    if other_claim.owner_row != existing.owner_row {
+                        let already = existing.losers.iter().any(|l| l.row_id == other_claim.owner_row);
+                        if !already {
+                            existing.losers.push(LooserEntry {
+                                row_id: other_claim.owner_row.clone(),
+                                version: other_claim.version.clone(),
+                            });
+                        }
+                    }
+                    // Always propagate losers from the other side
+                    for l in &other_claim.losers {
+                        let already = existing.losers.iter().any(|e| e.row_id == l.row_id);
+                        if !already && l.row_id != existing.owner_row {
+                            existing.losers.push(l.clone());
                         }
                     }
                 }
