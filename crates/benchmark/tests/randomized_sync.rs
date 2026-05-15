@@ -71,8 +71,10 @@ fn randomized_sync_converges() {
     const N_OPS: usize = 24;
 
     let peer_ids = ["P0", "P1", "P2", "P3"];
-    let mut peers: Vec<(ReplicaState, IndexManager)> =
-        peer_ids[..N_PEERS].iter().map(|id| setup_peer(id)).collect();
+    let mut peers: Vec<(ReplicaState, IndexManager)> = peer_ids[..N_PEERS]
+        .iter()
+        .map(|id| setup_peer(id))
+        .collect();
 
     let executor = SqlExecutor::new();
     let mut seq = DeterministicSeq::new(0xDEAD_BEEF);
@@ -153,11 +155,7 @@ fn randomized_sync_converges() {
     let hashes: Vec<String> = peers.iter().map(|(r, _)| snapshot_hash(r)).collect();
     let first = &hashes[0];
     for (i, h) in hashes.iter().enumerate() {
-        assert_eq!(
-            h, first,
-            "peer {} hash {} != peer 0 hash {}",
-            i, h, first
-        );
+        assert_eq!(h, first, "peer {} hash {} != peer 0 hash {}", i, h, first);
     }
 
     let metrics = benchmark::BenchMetrics::new(N_PEERS, total_rounds, 0);

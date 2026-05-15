@@ -1,4 +1,4 @@
-use core::error::{CrdtError, CrdtResult};
+use core::error::CrdtResult;
 use core::types::{Frontier, RowDelta, SyncDelta, Tombstone, UniquenessClaim};
 use core::utils::{frontier_update, merge_frontiers};
 use crdt::merge::merge_row;
@@ -14,15 +14,21 @@ pub fn extract_delta(source: &ReplicaState, remote_frontier: &Frontier) -> SyncD
         if let Some(table) = source.storage.snapshot_table(&table_name) {
             for row in table.values() {
                 let row_needs_sending = row.cells.values().any(|cell| {
-                    let known = remote_frontier.get(&cell.version.peer_id).copied().unwrap_or(0);
+                    let known = remote_frontier
+                        .get(&cell.version.peer_id)
+                        .copied()
+                        .unwrap_or(0);
                     cell.version.counter > known
-                }) || row.delete_version.as_ref().map_or(false, |dv| {
+                }) || row.delete_version.as_ref().is_some_and(|dv| {
                     let known = remote_frontier.get(&dv.peer_id).copied().unwrap_or(0);
                     dv.counter > known
                 });
 
                 if row_needs_sending {
-                    rows.push(RowDelta { table_id: table_name.clone(), row: row.clone() });
+                    rows.push(RowDelta {
+                        table_id: table_name.clone(),
+                        row: row.clone(),
+                    });
                 }
             }
         }
@@ -32,15 +38,17 @@ pub fn extract_delta(source: &ReplicaState, remote_frontier: &Frontier) -> SyncD
         .tombstones
         .all()
         .filter(|ts| {
-            let known = remote_frontier.get(&ts.version.peer_id).copied().unwrap_or(0);
+            let known = remote_frontier
+                .get(&ts.version.peer_id)
+                .copied()
+                .unwrap_or(0);
             ts.version.counter > known
         })
         .cloned()
         .collect();
 
     // Always send all uniqueness claims (they are small and idempotent to merge)
-    let uniqueness_claims: Vec<UniquenessClaim> =
-        source.uniqueness.all_claims().cloned().collect();
+    let uniqueness_claims: Vec<UniquenessClaim> = source.uniqueness.all_claims().cloned().collect();
 
     SyncDelta {
         source_peer: source.peer_id.clone(),
@@ -75,7 +83,12 @@ pub fn apply_delta(target: &mut ReplicaState, delta: &SyncDelta) -> CrdtResult<(
         incoming_ts.insert(ts.clone());
         // Also ensure the row in storage reflects the tombstone
         if let Some(existing_row) = target.storage.get_row(&ts.table_id, &ts.row_id).cloned() {
-            if !existing_row.deleted || existing_row.delete_version.as_ref().map_or(true, |ev| ts.version > *ev) {
+            if !existing_row.deleted
+                || existing_row
+                    .delete_version
+                    .as_ref()
+                    .is_none_or(|ev| ts.version > *ev)
+            {
                 let mut updated = existing_row;
                 updated.deleted = true;
                 updated.delete_version = Some(ts.version.clone());

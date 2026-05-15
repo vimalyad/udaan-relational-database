@@ -1,8 +1,7 @@
 //! Query execution engine. Phase 5/6 placeholder.
 //! Executes SELECT/WHERE/ORDER BY/LIMIT against the local materialized replica.
 
-use core::error::CrdtResult;
-use core::types::{Row, Value};
+use core::types::Value;
 
 #[derive(Debug, Clone)]
 pub struct QueryResult {
@@ -12,7 +11,10 @@ pub struct QueryResult {
 
 impl QueryResult {
     pub fn empty() -> Self {
-        Self { columns: vec![], rows: vec![] }
+        Self {
+            columns: vec![],
+            rows: vec![],
+        }
     }
 
     pub fn new(columns: Vec<String>, rows: Vec<Vec<Value>>) -> Self {

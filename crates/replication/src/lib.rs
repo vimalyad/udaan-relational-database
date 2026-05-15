@@ -1,11 +1,8 @@
 //! Replication state management: wraps storage + CRDT state for a single peer.
 
-use core::types::{Frontier, PeerId, Row, RowId, TableId, Tombstone, UniquenessClaim};
+use core::types::{Frontier, PeerId};
 use crdt::{LamportClock, TombstoneStore, UniquenessRegistry};
-use crdt::merge::{merge_row, merge_table};
 use storage::{SchemaStore, StorageEngine};
-use std::collections::BTreeMap;
-use core::error::CrdtResult;
 
 pub struct ReplicaState {
     pub peer_id: PeerId,

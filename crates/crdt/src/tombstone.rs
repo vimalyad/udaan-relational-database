@@ -1,4 +1,4 @@
-use core::types::{Frontier, RowId, TableId, Tombstone, Version};
+use core::types::{Frontier, RowId, TableId, Tombstone};
 use core::utils::frontier_dominates;
 use std::collections::BTreeMap;
 
@@ -26,11 +26,16 @@ impl TombstoneStore {
     }
 
     pub fn contains(&self, table_id: &str, row_id: &str) -> bool {
-        self.tombstones.get(table_id).map_or(false, |t| t.contains_key(row_id))
+        self.tombstones
+            .get(table_id)
+            .is_some_and(|t| t.contains_key(row_id))
     }
 
     pub fn all_for_table(&self, table_id: &str) -> impl Iterator<Item = &Tombstone> {
-        self.tombstones.get(table_id).into_iter().flat_map(|t| t.values())
+        self.tombstones
+            .get(table_id)
+            .into_iter()
+            .flat_map(|t| t.values())
     }
 
     pub fn all(&self) -> impl Iterator<Item = &Tombstone> {
@@ -67,6 +72,9 @@ impl TombstoneStore {
     }
 
     pub fn into_vec(self) -> Vec<Tombstone> {
-        self.tombstones.into_values().flat_map(|m| m.into_values()).collect()
+        self.tombstones
+            .into_values()
+            .flat_map(|m| m.into_values())
+            .collect()
     }
 }

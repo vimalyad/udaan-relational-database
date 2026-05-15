@@ -11,12 +11,28 @@ use std::io::{BufRead, Write};
 #[derive(Debug, Deserialize)]
 #[serde(tag = "cmd", content = "args")]
 enum Command {
-    OpenPeer { peer_id: String },
-    ApplySchema { peer_id: String, stmts: Vec<String> },
-    Execute { peer_id: String, sql: String, params: Vec<serde_json::Value> },
-    Sync { peer_a: String, peer_b: String },
-    SnapshotHash { peer_id: String },
-    SnapshotState { peer_id: String },
+    OpenPeer {
+        peer_id: String,
+    },
+    ApplySchema {
+        peer_id: String,
+        stmts: Vec<String>,
+    },
+    Execute {
+        peer_id: String,
+        sql: String,
+        params: Vec<serde_json::Value>,
+    },
+    Sync {
+        peer_a: String,
+        peer_b: String,
+    },
+    SnapshotHash {
+        peer_id: String,
+    },
+    SnapshotState {
+        peer_id: String,
+    },
     Close,
 }
 
@@ -30,11 +46,15 @@ enum Response {
 }
 
 fn ok(v: impl Serialize) -> Response {
-    Response::Ok { result: serde_json::to_value(v).unwrap_or(serde_json::Value::Null) }
+    Response::Ok {
+        result: serde_json::to_value(v).unwrap_or(serde_json::Value::Null),
+    }
 }
 
 fn err(e: impl std::fmt::Display) -> Response {
-    Response::Error { message: e.to_string() }
+    Response::Error {
+        message: e.to_string(),
+    }
 }
 
 fn main() {
@@ -72,30 +92,26 @@ fn main() {
                         Err(e) => err(e),
                     }
                 }
-                Command::Execute { peer_id, sql, params } => {
-                    match host.execute(&peer_id, &sql, &params) {
-                        Ok(result) => ok(result),
-                        Err(e) => err(e),
-                    }
-                }
-                Command::Sync { peer_a, peer_b } => {
-                    match host.sync(&peer_a, &peer_b) {
-                        Ok(()) => ok(serde_json::Value::Null),
-                        Err(e) => err(e),
-                    }
-                }
-                Command::SnapshotHash { peer_id } => {
-                    match host.snapshot_hash(&peer_id) {
-                        Ok(hash) => ok(hash),
-                        Err(e) => err(e),
-                    }
-                }
-                Command::SnapshotState { peer_id } => {
-                    match host.snapshot_state(&peer_id) {
-                        Ok(state) => ok(state),
-                        Err(e) => err(e),
-                    }
-                }
+                Command::Execute {
+                    peer_id,
+                    sql,
+                    params,
+                } => match host.execute(&peer_id, &sql, &params) {
+                    Ok(result) => ok(result),
+                    Err(e) => err(e),
+                },
+                Command::Sync { peer_a, peer_b } => match host.sync(&peer_a, &peer_b) {
+                    Ok(()) => ok(serde_json::Value::Null),
+                    Err(e) => err(e),
+                },
+                Command::SnapshotHash { peer_id } => match host.snapshot_hash(&peer_id) {
+                    Ok(hash) => ok(hash),
+                    Err(e) => err(e),
+                },
+                Command::SnapshotState { peer_id } => match host.snapshot_state(&peer_id) {
+                    Ok(state) => ok(state),
+                    Err(e) => err(e),
+                },
                 Command::Close => {
                     host.close();
                     ok(serde_json::Value::Null)
@@ -103,9 +119,8 @@ fn main() {
             },
         };
 
-        let line_out = serde_json::to_string(&response).unwrap_or_else(|e| {
-            serde_json::to_string(&err(e)).unwrap()
-        });
+        let line_out = serde_json::to_string(&response)
+            .unwrap_or_else(|e| serde_json::to_string(&err(e)).unwrap());
         let _ = writeln!(out, "{line_out}");
         let _ = out.flush();
     }

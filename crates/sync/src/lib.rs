@@ -23,7 +23,10 @@ mod tests {
         let mut row = Row::new(id);
         row.cells.insert(
             col.to_string(),
-            Cell::new(Value::Text(val.to_string()), Version::new(counter, peer.to_string())),
+            Cell::new(
+                Value::Text(val.to_string()),
+                Version::new(counter, peer.to_string()),
+            ),
         );
         row
     }
@@ -108,7 +111,11 @@ mod tests {
         a.clock.tick();
         a.clock.tick();
         a.storage.upsert_row("users", deleted_row).unwrap();
-        a.tombstones.insert(Tombstone { row_id: "u1".to_string(), table_id: "users".to_string(), version: dv });
+        a.tombstones.insert(Tombstone {
+            row_id: "u1".to_string(),
+            table_id: "users".to_string(),
+            version: dv,
+        });
         core::utils::frontier_update(&mut a.frontier, "A", a.clock.counter);
 
         sync_peers(&mut a, &mut b).unwrap();
@@ -126,15 +133,25 @@ mod tests {
 
         // A and B both insert u1, A sets name, B sets email
         let mut row_a = Row::new("u1");
-        row_a.cells.insert("name".to_string(), Cell::new(
-            Value::Text("Alice Cooper".to_string()), Version::new(10, "A".to_string())));
+        row_a.cells.insert(
+            "name".to_string(),
+            Cell::new(
+                Value::Text("Alice Cooper".to_string()),
+                Version::new(10, "A".to_string()),
+            ),
+        );
         a.clock.counter = 10;
         a.storage.upsert_row("users", row_a).unwrap();
         core::utils::frontier_update(&mut a.frontier, "A", 10);
 
         let mut row_b = Row::new("u1");
-        row_b.cells.insert("email".to_string(), Cell::new(
-            Value::Text("alice@ex.org".to_string()), Version::new(8, "B".to_string())));
+        row_b.cells.insert(
+            "email".to_string(),
+            Cell::new(
+                Value::Text("alice@ex.org".to_string()),
+                Version::new(8, "B".to_string()),
+            ),
+        );
         b.clock.counter = 8;
         b.storage.upsert_row("users", row_b).unwrap();
         core::utils::frontier_update(&mut b.frontier, "B", 8);

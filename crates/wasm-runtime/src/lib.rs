@@ -17,21 +17,27 @@ pub struct AnvilDb {
 impl AnvilDb {
     #[wasm_bindgen(constructor)]
     pub fn new(peer_id: &str) -> AnvilDb {
-        AnvilDb { inner: engine::AnvilEngine::new(peer_id) }
+        AnvilDb {
+            inner: engine::AnvilEngine::new(peer_id),
+        }
     }
 
     pub fn execute(&mut self, sql: &str) -> Result<JsValue, JsValue> {
-        self.inner.execute(sql, &[])
+        self.inner
+            .execute(sql, &[])
             .map(|r| serde_wasm_bindgen::to_value(&r).unwrap_or(JsValue::NULL))
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     pub fn snapshot_hash(&self) -> Result<String, JsValue> {
-        self.inner.snapshot_hash().map_err(|e| JsValue::from_str(&e.to_string()))
+        self.inner
+            .snapshot_hash()
+            .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     pub fn snapshot_state(&self) -> Result<JsValue, JsValue> {
-        self.inner.snapshot_state()
+        self.inner
+            .snapshot_state()
             .map(|s| serde_wasm_bindgen::to_value(&s).unwrap_or(JsValue::NULL))
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
@@ -39,8 +45,10 @@ impl AnvilDb {
     /// Sync with another AnvilDb instance (in-process, same JS context).
     pub fn sync_with(&mut self, other: &mut AnvilDb) -> Result<(), JsValue> {
         // Extract deltas and apply
-        let delta_for_other = sync::extract_delta(&self.inner.replica, &other.inner.replica.frontier);
-        let delta_for_self = sync::extract_delta(&other.inner.replica, &self.inner.replica.frontier);
+        let delta_for_other =
+            sync::extract_delta(&self.inner.replica, &other.inner.replica.frontier);
+        let delta_for_self =
+            sync::extract_delta(&other.inner.replica, &self.inner.replica.frontier);
         sync::apply_delta(&mut other.inner.replica, &delta_for_other)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         sync::apply_delta(&mut self.inner.replica, &delta_for_self)
@@ -52,11 +60,11 @@ impl AnvilDb {
 // Native (non-WASM) module — exposes engine for testing
 pub mod engine {
     use core::error::CrdtResult;
+    use core::types::Value;
     use index::IndexManager;
+    use query::QueryResult;
     use replication::ReplicaState;
     use sql::SqlExecutor;
-    use query::QueryResult;
-    use core::types::Value;
 
     pub struct AnvilEngine {
         pub replica: ReplicaState,
@@ -74,15 +82,24 @@ pub mod engine {
         }
 
         pub fn execute(&mut self, sql: &str, params: &[Value]) -> CrdtResult<QueryResult> {
-            self.executor.execute(&mut self.replica, &mut self.indexes, sql, params)
+            self.executor
+                .execute(&mut self.replica, &mut self.indexes, sql, params)
         }
 
         pub fn snapshot_hash(&self) -> CrdtResult<String> {
             use hashing::SnapshotHasher;
             use std::collections::BTreeMap;
-            let tables: BTreeMap<String, BTreeMap<String, core::types::Row>> = self.replica
-                .storage.table_names().into_iter()
-                .filter_map(|name| self.replica.storage.snapshot_table(&name).map(|t| (name, t.clone())))
+            let tables: BTreeMap<String, BTreeMap<String, core::types::Row>> = self
+                .replica
+                .storage
+                .table_names()
+                .into_iter()
+                .filter_map(|name| {
+                    self.replica
+                        .storage
+                        .snapshot_table(&name)
+                        .map(|t| (name, t.clone()))
+                })
                 .collect();
             let tombstones: Vec<_> = self.replica.tombstones.all().cloned().collect();
             let claims: Vec<_> = self.replica.uniqueness.all_claims().cloned().collect();
@@ -92,7 +109,9 @@ pub mod engine {
         pub fn snapshot_state(&self) -> CrdtResult<serde_json::Value> {
             let mut result = serde_json::Map::new();
             for table_name in self.replica.storage.table_names() {
-                let rows: Vec<serde_json::Value> = self.replica.storage
+                let rows: Vec<serde_json::Value> = self
+                    .replica
+                    .storage
                     .visible_rows(&table_name)
                     .map(|row| {
                         let mut obj = serde_json::Map::new();

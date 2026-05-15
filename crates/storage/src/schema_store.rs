@@ -15,7 +15,10 @@ impl SchemaStore {
 
     pub fn create_table(&mut self, schema: TableSchema) -> CrdtResult<()> {
         if self.tables.contains_key(&schema.name) {
-            return Err(CrdtError::SchemaError(format!("table {} already exists", schema.name)));
+            return Err(CrdtError::SchemaError(format!(
+                "table {} already exists",
+                schema.name
+            )));
         }
         self.tables.insert(schema.name.clone(), schema);
         Ok(())

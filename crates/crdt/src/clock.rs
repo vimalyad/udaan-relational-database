@@ -9,7 +9,10 @@ pub struct LamportClock {
 
 impl LamportClock {
     pub fn new(peer_id: impl Into<PeerId>) -> Self {
-        Self { peer_id: peer_id.into(), counter: 0 }
+        Self {
+            peer_id: peer_id.into(),
+            counter: 0,
+        }
     }
 
     /// Tick for a local write; returns new Version.

@@ -28,7 +28,9 @@ pub struct TcpTransport {
 
 impl TcpTransport {
     pub fn new(listen_addr: impl Into<String>) -> Self {
-        Self { listen_addr: listen_addr.into() }
+        Self {
+            listen_addr: listen_addr.into(),
+        }
     }
 }
 

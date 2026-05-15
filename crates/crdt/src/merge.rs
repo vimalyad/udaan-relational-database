@@ -1,4 +1,4 @@
-use core::types::{Cell, ColumnId, Row, RowId, TableId, Value, Version};
+use core::types::{Cell, ColumnId, Row, RowId};
 use std::collections::BTreeMap;
 
 /// Merge two cells: the cell with the higher Version wins (LWW per cell).
@@ -38,12 +38,15 @@ pub fn merge_row(a: &Row, b: &Row) -> Row {
 
     // Delete-wins: if either is deleted, result is deleted.
     // The delete_version tracks which delete event applies.
-    let (deleted, delete_version) = match (&a.deleted, &b.deleted, &a.delete_version, &b.delete_version) {
-        (true, true, Some(va), Some(vb)) => (true, Some(if vb > va { vb.clone() } else { va.clone() })),
-        (true, _, v, _) => (true, v.clone()),
-        (_, true, _, v) => (true, v.clone()),
-        _ => (false, None),
-    };
+    let (deleted, delete_version) =
+        match (&a.deleted, &b.deleted, &a.delete_version, &b.delete_version) {
+            (true, true, Some(va), Some(vb)) => {
+                (true, Some(if vb > va { vb.clone() } else { va.clone() }))
+            }
+            (true, _, v, _) => (true, v.clone()),
+            (_, true, _, v) => (true, v.clone()),
+            _ => (false, None),
+        };
 
     Row {
         id: a.id.clone(),
@@ -54,10 +57,7 @@ pub fn merge_row(a: &Row, b: &Row) -> Row {
 }
 
 /// Merge two table states (BTreeMap<RowId, Row>).
-pub fn merge_table(
-    a: &BTreeMap<RowId, Row>,
-    b: &BTreeMap<RowId, Row>,
-) -> BTreeMap<RowId, Row> {
+pub fn merge_table(a: &BTreeMap<RowId, Row>, b: &BTreeMap<RowId, Row>) -> BTreeMap<RowId, Row> {
     let mut result = a.clone();
     for (row_id, row_b) in b {
         let merged = if let Some(row_a) = result.get(row_id) {
@@ -73,7 +73,7 @@ pub fn merge_table(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::types::Version;
+    use core::types::{Value, Version};
 
     fn cell(val: i64, counter: u64, peer: &str) -> Cell {
         Cell::new(Value::Integer(val), Version::new(counter, peer.to_string()))
@@ -114,7 +114,10 @@ mod tests {
         let a = cell(1, 1, "A");
         let b = cell(2, 2, "A");
         let c = cell(3, 3, "A");
-        assert_eq!(merge_cell(&a, &merge_cell(&b, &c)), merge_cell(&merge_cell(&a, &b), &c));
+        assert_eq!(
+            merge_cell(&a, &merge_cell(&b, &c)),
+            merge_cell(&merge_cell(&a, &b), &c)
+        );
     }
 
     #[test]

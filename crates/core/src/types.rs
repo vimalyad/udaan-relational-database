@@ -1,5 +1,5 @@
-use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 pub type PeerId = String;
 pub type RowId = String;
@@ -16,11 +16,17 @@ pub struct Version {
 
 impl Version {
     pub fn new(counter: u64, peer_id: impl Into<PeerId>) -> Self {
-        Self { counter, peer_id: peer_id.into() }
+        Self {
+            counter,
+            peer_id: peer_id.into(),
+        }
     }
 
     pub fn zero(peer_id: impl Into<PeerId>) -> Self {
-        Self { counter: 0, peer_id: peer_id.into() }
+        Self {
+            counter: 0,
+            peer_id: peer_id.into(),
+        }
     }
 }
 
@@ -208,7 +214,10 @@ impl TableSchema {
     }
 
     pub fn unique_columns(&self) -> Vec<&ColumnSchema> {
-        self.columns.iter().filter(|c| c.unique && !c.primary_key).collect()
+        self.columns
+            .iter()
+            .filter(|c| c.unique && !c.primary_key)
+            .collect()
     }
 
     pub fn column(&self, name: &str) -> Option<&ColumnSchema> {

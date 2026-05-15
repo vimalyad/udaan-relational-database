@@ -1,4 +1,4 @@
-use crate::types::{Frontier, PeerId, Version};
+use crate::types::{Frontier, Version};
 use std::collections::BTreeMap;
 
 /// Advance a Lamport clock: max(local, received) + 1 for local events,
@@ -36,7 +36,8 @@ pub fn frontier_update(frontier: &mut Frontier, peer: &str, counter: u64) {
 /// Check if frontier `a` has seen everything in frontier `b`.
 /// Returns true if for every peer in b, a[peer] >= b[peer].
 pub fn frontier_dominates(a: &Frontier, b: &Frontier) -> bool {
-    b.iter().all(|(peer, &cnt)| a.get(peer).copied().unwrap_or(0) >= cnt)
+    b.iter()
+        .all(|(peer, &cnt)| a.get(peer).copied().unwrap_or(0) >= cnt)
 }
 
 /// Select the winning Version using Lamport ordering (higher wins).

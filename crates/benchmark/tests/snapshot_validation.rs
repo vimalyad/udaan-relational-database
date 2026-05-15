@@ -30,32 +30,86 @@ fn setup_peer(peer_id: &str) -> (ReplicaState, IndexManager) {
     (replica, indexes)
 }
 
-fn exec_ops(executor: &SqlExecutor, peer_id: &str, replica: &mut ReplicaState, indexes: &mut IndexManager) {
+fn exec_ops(
+    executor: &SqlExecutor,
+    peer_id: &str,
+    replica: &mut ReplicaState,
+    indexes: &mut IndexManager,
+) {
     // Each peer gets its own writes, uniquely identified by peer prefix
     match peer_id {
         "A" => {
-            executor.execute(replica, indexes,
-                "INSERT INTO events (id, kind, val) VALUES ('e1', 'click', 10)", &[]).unwrap();
-            executor.execute(replica, indexes,
-                "INSERT INTO events (id, kind, val) VALUES ('e2', 'view', 20)", &[]).unwrap();
-            executor.execute(replica, indexes,
-                "UPDATE events SET val = 15 WHERE id = 'e1'", &[]).unwrap();
+            executor
+                .execute(
+                    replica,
+                    indexes,
+                    "INSERT INTO events (id, kind, val) VALUES ('e1', 'click', 10)",
+                    &[],
+                )
+                .unwrap();
+            executor
+                .execute(
+                    replica,
+                    indexes,
+                    "INSERT INTO events (id, kind, val) VALUES ('e2', 'view', 20)",
+                    &[],
+                )
+                .unwrap();
+            executor
+                .execute(
+                    replica,
+                    indexes,
+                    "UPDATE events SET val = 15 WHERE id = 'e1'",
+                    &[],
+                )
+                .unwrap();
         }
         "B" => {
-            executor.execute(replica, indexes,
-                "INSERT INTO events (id, kind, val) VALUES ('e3', 'scroll', 5)", &[]).unwrap();
-            executor.execute(replica, indexes,
-                "INSERT INTO events (id, kind, val) VALUES ('e4', 'click', 30)", &[]).unwrap();
-            executor.execute(replica, indexes,
-                "DELETE FROM events WHERE id = 'e3'", &[]).unwrap();
+            executor
+                .execute(
+                    replica,
+                    indexes,
+                    "INSERT INTO events (id, kind, val) VALUES ('e3', 'scroll', 5)",
+                    &[],
+                )
+                .unwrap();
+            executor
+                .execute(
+                    replica,
+                    indexes,
+                    "INSERT INTO events (id, kind, val) VALUES ('e4', 'click', 30)",
+                    &[],
+                )
+                .unwrap();
+            executor
+                .execute(replica, indexes, "DELETE FROM events WHERE id = 'e3'", &[])
+                .unwrap();
         }
         "C" => {
-            executor.execute(replica, indexes,
-                "INSERT INTO events (id, kind, val) VALUES ('e5', 'hover', 1)", &[]).unwrap();
-            executor.execute(replica, indexes,
-                "INSERT INTO events (id, kind, val) VALUES ('e6', 'click', 50)", &[]).unwrap();
-            executor.execute(replica, indexes,
-                "UPDATE events SET kind = 'tap', val = 55 WHERE id = 'e6'", &[]).unwrap();
+            executor
+                .execute(
+                    replica,
+                    indexes,
+                    "INSERT INTO events (id, kind, val) VALUES ('e5', 'hover', 1)",
+                    &[],
+                )
+                .unwrap();
+            executor
+                .execute(
+                    replica,
+                    indexes,
+                    "INSERT INTO events (id, kind, val) VALUES ('e6', 'click', 50)",
+                    &[],
+                )
+                .unwrap();
+            executor
+                .execute(
+                    replica,
+                    indexes,
+                    "UPDATE events SET kind = 'tap', val = 55 WHERE id = 'e6'",
+                    &[],
+                )
+                .unwrap();
         }
         _ => panic!("unexpected peer_id: {}", peer_id),
     }
@@ -204,7 +258,11 @@ fn same_ops_different_sync_orders_converge() {
     );
 
     // Within each cluster, all peers agree
-    for (cluster_name, hashes) in [("order1", &hashes1), ("order2", &hashes2), ("order3", &hashes3)] {
+    for (cluster_name, hashes) in [
+        ("order1", &hashes1),
+        ("order2", &hashes2),
+        ("order3", &hashes3),
+    ] {
         let first = &hashes[0];
         for (i, h) in hashes.iter().enumerate() {
             assert_eq!(

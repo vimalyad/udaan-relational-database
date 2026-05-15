@@ -20,17 +20,23 @@ pub fn from_sql_value(v: &ast::Value) -> CrdtResult<Value> {
             Ok(Value::Text(s.clone()))
         }
         ast::Value::Boolean(b) => Ok(Value::Integer(if *b { 1 } else { 0 })),
-        other => Err(CrdtError::ParseError(format!("unsupported value: {other:?}"))),
+        other => Err(CrdtError::ParseError(format!(
+            "unsupported value: {other:?}"
+        ))),
     }
 }
 
 /// Evaluate a simple literal expression (no subqueries, no functions).
+#[allow(clippy::only_used_in_recursion)]
 pub fn eval_literal(expr: &Expr, params: &[Value]) -> CrdtResult<Value> {
     match expr {
         Expr::Value(v) => from_sql_value(v),
         Expr::Identifier(ident) => {
             // Could be a column reference — caller must resolve
-            Err(CrdtError::ParseError(format!("unresolved identifier: {}", ident.value)))
+            Err(CrdtError::ParseError(format!(
+                "unresolved identifier: {}",
+                ident.value
+            )))
         }
         Expr::UnaryOp { op, expr } => {
             let inner = eval_literal(expr, params)?;
@@ -43,16 +49,14 @@ pub fn eval_literal(expr: &Expr, params: &[Value]) -> CrdtResult<Value> {
             }
         }
         Expr::Nested(inner) => eval_literal(inner, params),
-        _ => Err(CrdtError::ParseError(format!("complex expr not supported: {expr:?}"))),
+        _ => Err(CrdtError::ParseError(format!(
+            "complex expr not supported: {expr:?}"
+        ))),
     }
 }
 
 /// Evaluate a WHERE predicate against a row's cell map.
-pub fn eval_predicate(
-    expr: &Expr,
-    row: &core::types::Row,
-    params: &[Value],
-) -> CrdtResult<bool> {
+pub fn eval_predicate(expr: &Expr, row: &core::types::Row, params: &[Value]) -> CrdtResult<bool> {
     match expr {
         Expr::BinaryOp { left, op, right } => {
             let lv = eval_row_expr(left, row, params)?;
@@ -95,16 +99,25 @@ pub fn eval_predicate(
     }
 }
 
+#[allow(clippy::only_used_in_recursion)]
 fn eval_row_expr(expr: &Expr, row: &core::types::Row, params: &[Value]) -> CrdtResult<Value> {
     match expr {
         Expr::Identifier(ident) => {
             let col = &ident.value;
-            Ok(row.cells.get(col).map(|c| c.value.clone()).unwrap_or(Value::Null))
+            Ok(row
+                .cells
+                .get(col)
+                .map(|c| c.value.clone())
+                .unwrap_or(Value::Null))
         }
         Expr::CompoundIdentifier(parts) => {
             // table.column — use the last part as column name
             let col = parts.last().map(|p| p.value.as_str()).unwrap_or("");
-            Ok(row.cells.get(col).map(|c| c.value.clone()).unwrap_or(Value::Null))
+            Ok(row
+                .cells
+                .get(col)
+                .map(|c| c.value.clone())
+                .unwrap_or(Value::Null))
         }
         Expr::Value(v) => from_sql_value(v),
         Expr::UnaryOp { op, expr } => {
@@ -133,9 +146,13 @@ fn eval_row_expr(expr: &Expr, row: &core::types::Row, params: &[Value]) -> CrdtR
                 LtEq => Ok(Value::Integer(if lv <= rv { 1 } else { 0 })),
                 Gt => Ok(Value::Integer(if lv > rv { 1 } else { 0 })),
                 GtEq => Ok(Value::Integer(if lv >= rv { 1 } else { 0 })),
-                _ => Err(CrdtError::ParseError(format!("unsupported binary op in expression: {op}"))),
+                _ => Err(CrdtError::ParseError(format!(
+                    "unsupported binary op in expression: {op}"
+                ))),
             }
         }
-        _ => Err(CrdtError::ParseError(format!("unsupported expression: {expr:?}"))),
+        _ => Err(CrdtError::ParseError(format!(
+            "unsupported expression: {expr:?}"
+        ))),
     }
 }

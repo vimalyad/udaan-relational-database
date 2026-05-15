@@ -8,12 +8,18 @@
 
 use core::error::CrdtResult;
 use core::types::{Row, RowId, TableId, Tombstone};
-use std::collections::BTreeMap;
 
 #[derive(Debug, Clone)]
 pub enum WriteOp {
-    Upsert { table_id: TableId, row: Row },
-    Delete { table_id: TableId, row_id: RowId, tombstone: Tombstone },
+    Upsert {
+        table_id: TableId,
+        row: Row,
+    },
+    Delete {
+        table_id: TableId,
+        row_id: RowId,
+        tombstone: Tombstone,
+    },
 }
 
 /// Buffered write transaction. Applied atomically on commit.
@@ -29,10 +35,18 @@ impl Transaction {
     }
 
     pub fn buffer_upsert(&mut self, table_id: impl Into<TableId>, row: Row) {
-        self.ops.push(WriteOp::Upsert { table_id: table_id.into(), row });
+        self.ops.push(WriteOp::Upsert {
+            table_id: table_id.into(),
+            row,
+        });
     }
 
-    pub fn buffer_delete(&mut self, table_id: impl Into<TableId>, row_id: impl Into<RowId>, tombstone: Tombstone) {
+    pub fn buffer_delete(
+        &mut self,
+        table_id: impl Into<TableId>,
+        row_id: impl Into<RowId>,
+        tombstone: Tombstone,
+    ) {
         self.ops.push(WriteOp::Delete {
             table_id: table_id.into(),
             row_id: row_id.into(),
@@ -71,7 +85,11 @@ pub fn apply_transaction(
             WriteOp::Upsert { table_id, row } => {
                 storage.upsert_row(&table_id, row)?;
             }
-            WriteOp::Delete { table_id, row_id, tombstone } => {
+            WriteOp::Delete {
+                table_id: _,
+                row_id: _,
+                tombstone,
+            } => {
                 tombstones.insert(tombstone);
                 // Row should already be tombstoned in storage by the caller
             }

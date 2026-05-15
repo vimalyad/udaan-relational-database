@@ -28,7 +28,11 @@ impl UniquenessRegistry {
         row_id: &str,
         version: Version,
     ) -> ClaimResult {
-        let key = (table_id.to_string(), column_id.to_string(), value.to_string());
+        let key = (
+            table_id.to_string(),
+            column_id.to_string(),
+            value.to_string(),
+        );
 
         if let Some(existing) = self.claims.get_mut(&key) {
             if version > existing.version {
@@ -51,7 +55,9 @@ impl UniquenessRegistry {
                     row_id: row_id.to_string(),
                     version: version.clone(),
                 });
-                ClaimResult::Lost { winner_row: existing.owner_row.clone() }
+                ClaimResult::Lost {
+                    winner_row: existing.owner_row.clone(),
+                }
             }
         } else {
             self.claims.insert(
@@ -71,13 +77,18 @@ impl UniquenessRegistry {
 
     /// Get the canonical owner row for a unique value.
     pub fn owner(&self, table_id: &str, column_id: &str, value: &str) -> Option<&str> {
-        let key = (table_id.to_string(), column_id.to_string(), value.to_string());
+        let key = (
+            table_id.to_string(),
+            column_id.to_string(),
+            value.to_string(),
+        );
         self.claims.get(&key).map(|c| c.owner_row.as_str())
     }
 
     /// Check if a row is the canonical owner of a unique value.
     pub fn is_owner(&self, table_id: &str, column_id: &str, value: &str, row_id: &str) -> bool {
-        self.owner(table_id, column_id, value).map_or(false, |o| o == row_id)
+        self.owner(table_id, column_id, value)
+            .is_some_and(|o| o == row_id)
     }
 
     /// Merge in claims from another registry. Winner = higher version.
@@ -106,7 +117,10 @@ impl UniquenessRegistry {
                     // Incumbent wins (or same version/owner — idempotent merge).
                     // Always merge losers from the other claim into ours.
                     if other_claim.owner_row != existing.owner_row {
-                        let already = existing.losers.iter().any(|l| l.row_id == other_claim.owner_row);
+                        let already = existing
+                            .losers
+                            .iter()
+                            .any(|l| l.row_id == other_claim.owner_row);
                         if !already {
                             existing.losers.push(LooserEntry {
                                 row_id: other_claim.owner_row.clone(),
@@ -160,8 +174,20 @@ mod tests {
     #[test]
     fn higher_version_wins() {
         let mut reg = UniquenessRegistry::new();
-        reg.claim("users", "email", "alice@x.com", "u1", Version::new(3, "peerA".to_string()));
-        let r = reg.claim("users", "email", "alice@x.com", "u2", Version::new(7, "peerB".to_string()));
+        reg.claim(
+            "users",
+            "email",
+            "alice@x.com",
+            "u1",
+            Version::new(3, "peerA".to_string()),
+        );
+        let r = reg.claim(
+            "users",
+            "email",
+            "alice@x.com",
+            "u2",
+            Version::new(7, "peerB".to_string()),
+        );
         assert_eq!(r, ClaimResult::Won);
         assert_eq!(reg.owner("users", "email", "alice@x.com"), Some("u2"));
     }
@@ -169,10 +195,29 @@ mod tests {
     #[test]
     fn loser_preserved() {
         let mut reg = UniquenessRegistry::new();
-        reg.claim("users", "email", "alice@x.com", "u1", Version::new(7, "peerA".to_string()));
-        let r = reg.claim("users", "email", "alice@x.com", "u2", Version::new(3, "peerB".to_string()));
+        reg.claim(
+            "users",
+            "email",
+            "alice@x.com",
+            "u1",
+            Version::new(7, "peerA".to_string()),
+        );
+        let r = reg.claim(
+            "users",
+            "email",
+            "alice@x.com",
+            "u2",
+            Version::new(3, "peerB".to_string()),
+        );
         assert!(matches!(r, ClaimResult::Lost { .. }));
-        let claim = reg.claims.get(&("users".to_string(), "email".to_string(), "alice@x.com".to_string())).unwrap();
+        let claim = reg
+            .claims
+            .get(&(
+                "users".to_string(),
+                "email".to_string(),
+                "alice@x.com".to_string(),
+            ))
+            .unwrap();
         assert_eq!(claim.losers.len(), 1);
         assert_eq!(claim.losers[0].row_id, "u2");
     }

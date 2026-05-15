@@ -10,7 +10,11 @@ pub struct PeerSession {
 
 impl PeerSession {
     pub fn new(peer_id: impl Into<PeerId>) -> Self {
-        Self { peer_id: peer_id.into(), address: None, connected: false }
+        Self {
+            peer_id: peer_id.into(),
+            address: None,
+            connected: false,
+        }
     }
 
     pub fn with_address(mut self, addr: impl Into<String>) -> Self {

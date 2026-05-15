@@ -33,13 +33,10 @@ fn setup_peer(peer_id: &str) -> (ReplicaState, IndexManager) {
     (replica, indexes)
 }
 
-fn exec(
-    executor: &SqlExecutor,
-    replica: &mut ReplicaState,
-    indexes: &mut IndexManager,
-    sql: &str,
-) {
-    executor.execute(replica, indexes, sql, &[]).unwrap_or_else(|e| panic!("{sql}: {e}"));
+fn exec(executor: &SqlExecutor, replica: &mut ReplicaState, indexes: &mut IndexManager, sql: &str) {
+    executor
+        .execute(replica, indexes, sql, &[])
+        .unwrap_or_else(|e| panic!("{sql}: {e}"));
 }
 
 fn snapshot_hash(replica: &ReplicaState) -> String {
@@ -74,16 +71,56 @@ fn partition_then_merge_converges() {
     // --- Phase 1: Partitioned writes ---
 
     // Group A writes
-    exec(&ex, &mut a0, &mut a0_idx, "INSERT INTO docs (id, content, rev) VALUES ('d1', 'Group A draft', 1)");
-    exec(&ex, &mut a0, &mut a0_idx, "INSERT INTO docs (id, content, rev) VALUES ('d2', 'Shared doc v1', 1)");
-    exec(&ex, &mut a1, &mut a1_idx, "INSERT INTO docs (id, content, rev) VALUES ('d3', 'A1 only doc', 1)");
-    exec(&ex, &mut a1, &mut a1_idx, "UPDATE docs SET content = 'Group A draft v2', rev = 2 WHERE id = 'd1'");
+    exec(
+        &ex,
+        &mut a0,
+        &mut a0_idx,
+        "INSERT INTO docs (id, content, rev) VALUES ('d1', 'Group A draft', 1)",
+    );
+    exec(
+        &ex,
+        &mut a0,
+        &mut a0_idx,
+        "INSERT INTO docs (id, content, rev) VALUES ('d2', 'Shared doc v1', 1)",
+    );
+    exec(
+        &ex,
+        &mut a1,
+        &mut a1_idx,
+        "INSERT INTO docs (id, content, rev) VALUES ('d3', 'A1 only doc', 1)",
+    );
+    exec(
+        &ex,
+        &mut a1,
+        &mut a1_idx,
+        "UPDATE docs SET content = 'Group A draft v2', rev = 2 WHERE id = 'd1'",
+    );
 
     // Group B writes (concurrent, independent)
-    exec(&ex, &mut b0, &mut b0_idx, "INSERT INTO docs (id, content, rev) VALUES ('d4', 'Group B draft', 1)");
-    exec(&ex, &mut b0, &mut b0_idx, "INSERT INTO docs (id, content, rev) VALUES ('d2', 'Shared doc B version', 1)");
-    exec(&ex, &mut b1, &mut b1_idx, "INSERT INTO docs (id, content, rev) VALUES ('d5', 'B1 only doc', 1)");
-    exec(&ex, &mut b1, &mut b1_idx, "DELETE FROM docs WHERE id = 'd4'");
+    exec(
+        &ex,
+        &mut b0,
+        &mut b0_idx,
+        "INSERT INTO docs (id, content, rev) VALUES ('d4', 'Group B draft', 1)",
+    );
+    exec(
+        &ex,
+        &mut b0,
+        &mut b0_idx,
+        "INSERT INTO docs (id, content, rev) VALUES ('d2', 'Shared doc B version', 1)",
+    );
+    exec(
+        &ex,
+        &mut b1,
+        &mut b1_idx,
+        "INSERT INTO docs (id, content, rev) VALUES ('d5', 'B1 only doc', 1)",
+    );
+    exec(
+        &ex,
+        &mut b1,
+        &mut b1_idx,
+        "DELETE FROM docs WHERE id = 'd4'",
+    );
 
     // Sync within Group A only
     sync_to_quiescence(&mut a0, &mut a1).unwrap();

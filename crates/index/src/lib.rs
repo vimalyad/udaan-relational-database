@@ -16,7 +16,10 @@ pub struct SecondaryIndex {
 
 impl SecondaryIndex {
     pub fn new(def: IndexDef) -> Self {
-        Self { def, entries: BTreeMap::new() }
+        Self {
+            def,
+            entries: BTreeMap::new(),
+        }
     }
 
     pub fn insert(&mut self, key: Vec<Value>, row_id: RowId) {
@@ -51,7 +54,10 @@ impl SecondaryIndex {
 
     /// All row IDs in index order.
     pub fn all_row_ids(&self) -> Vec<RowId> {
-        self.entries.values().flat_map(|s| s.iter().cloned()).collect()
+        self.entries
+            .values()
+            .flat_map(|s| s.iter().cloned())
+            .collect()
     }
 
     pub fn entry_count(&self) -> usize {
@@ -120,13 +126,22 @@ impl IndexManager {
     }
 
     pub fn indexes_for_table(&self, table_id: &str) -> Vec<&SecondaryIndex> {
-        self.indexes.get(table_id).map(|m| m.values().collect()).unwrap_or_default()
+        self.indexes
+            .get(table_id)
+            .map(|m| m.values().collect())
+            .unwrap_or_default()
     }
 }
 
 fn extract_index_key(columns: &[String], row: &Row) -> Vec<Value> {
-    columns.iter()
-        .map(|col| row.cells.get(col).map(|c| c.value.clone()).unwrap_or(Value::Null))
+    columns
+        .iter()
+        .map(|col| {
+            row.cells
+                .get(col)
+                .map(|c| c.value.clone())
+                .unwrap_or(Value::Null)
+        })
         .collect()
 }
 
@@ -140,7 +155,10 @@ mod tests {
         for (col, val) in cols {
             row.cells.insert(
                 col.to_string(),
-                Cell::new(Value::Text(val.to_string()), Version::new(1, "A".to_string())),
+                Cell::new(
+                    Value::Text(val.to_string()),
+                    Version::new(1, "A".to_string()),
+                ),
             );
         }
         row
@@ -235,6 +253,9 @@ mod tests {
 
         let ids1 = mgr1.get_index("t", "idx").unwrap().all_row_ids();
         let ids2 = mgr2.get_index("t", "idx").unwrap().all_row_ids();
-        assert_eq!(ids1, ids2, "index must be deterministic regardless of insert order");
+        assert_eq!(
+            ids1, ids2,
+            "index must be deterministic regardless of insert order"
+        );
     }
 }

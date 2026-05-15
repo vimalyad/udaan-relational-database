@@ -1,6 +1,6 @@
 use blake3::Hasher;
 use core::error::CrdtResult;
-use core::types::{Row, TableId, UniquenessClaim, Tombstone};
+use core::types::{Row, TableId, Tombstone, UniquenessClaim};
 use std::collections::BTreeMap;
 
 /// Compute a deterministic BLAKE3 snapshot hash over the canonical database state.
@@ -71,7 +71,8 @@ impl SnapshotHasher {
         let mut hasher = Hasher::new();
         let mut sorted: Vec<_> = claims.iter().collect();
         sorted.sort_by(|a, b| {
-            a.table_id.cmp(&b.table_id)
+            a.table_id
+                .cmp(&b.table_id)
                 .then(a.column_id.cmp(&b.column_id))
                 .then(a.value.cmp(&b.value))
         });
@@ -137,7 +138,10 @@ mod tests {
         let mut row = Row::new(id);
         row.cells.insert(
             col.to_string(),
-            Cell::new(Value::Text(val.to_string()), Version::new(counter, peer.to_string())),
+            Cell::new(
+                Value::Text(val.to_string()),
+                Version::new(counter, peer.to_string()),
+            ),
         );
         row
     }
@@ -147,38 +151,88 @@ mod tests {
         // Same values but different version metadata → same hash (order-invariant)
         let mut tables1: BTreeMap<String, BTreeMap<String, Row>> = BTreeMap::new();
         let mut r1 = Row::new("u1");
-        r1.cells.insert("name".to_string(), Cell::new(Value::Text("Alice".to_string()), Version::new(5, "A".to_string())));
-        tables1.entry("users".to_string()).or_default().insert("u1".to_string(), r1);
+        r1.cells.insert(
+            "name".to_string(),
+            Cell::new(
+                Value::Text("Alice".to_string()),
+                Version::new(5, "A".to_string()),
+            ),
+        );
+        tables1
+            .entry("users".to_string())
+            .or_default()
+            .insert("u1".to_string(), r1);
 
         let mut tables2: BTreeMap<String, BTreeMap<String, Row>> = BTreeMap::new();
         let mut r2 = Row::new("u1");
-        r2.cells.insert("name".to_string(), Cell::new(Value::Text("Alice".to_string()), Version::new(10, "B".to_string())));
-        tables2.entry("users".to_string()).or_default().insert("u1".to_string(), r2);
+        r2.cells.insert(
+            "name".to_string(),
+            Cell::new(
+                Value::Text("Alice".to_string()),
+                Version::new(10, "B".to_string()),
+            ),
+        );
+        tables2
+            .entry("users".to_string())
+            .or_default()
+            .insert("u1".to_string(), r2);
 
         let h1 = SnapshotHasher::hash_tables(&tables1).unwrap();
         let h2 = SnapshotHasher::hash_tables(&tables2).unwrap();
-        assert_eq!(h1, h2, "same values must hash identically regardless of version");
+        assert_eq!(
+            h1, h2,
+            "same values must hash identically regardless of version"
+        );
     }
 
     #[test]
     fn tombstone_hash_version_independent() {
-        let ts1 = vec![Tombstone { row_id: "u1".to_string(), table_id: "users".to_string(), version: Version::new(5, "A".to_string()) }];
-        let ts2 = vec![Tombstone { row_id: "u1".to_string(), table_id: "users".to_string(), version: Version::new(99, "C".to_string()) }];
-        assert_eq!(SnapshotHasher::hash_tombstones(&ts1), SnapshotHasher::hash_tombstones(&ts2),
-            "tombstone hash must not depend on version");
+        let ts1 = vec![Tombstone {
+            row_id: "u1".to_string(),
+            table_id: "users".to_string(),
+            version: Version::new(5, "A".to_string()),
+        }];
+        let ts2 = vec![Tombstone {
+            row_id: "u1".to_string(),
+            table_id: "users".to_string(),
+            version: Version::new(99, "C".to_string()),
+        }];
+        assert_eq!(
+            SnapshotHasher::hash_tombstones(&ts1),
+            SnapshotHasher::hash_tombstones(&ts2),
+            "tombstone hash must not depend on version"
+        );
     }
 
     #[test]
     fn different_values_different_hash() {
         let mut tables1: BTreeMap<String, BTreeMap<String, Row>> = BTreeMap::new();
         let mut r1 = Row::new("u1");
-        r1.cells.insert("name".to_string(), Cell::new(Value::Text("Alice".to_string()), Version::new(1, "A".to_string())));
-        tables1.entry("users".to_string()).or_default().insert("u1".to_string(), r1);
+        r1.cells.insert(
+            "name".to_string(),
+            Cell::new(
+                Value::Text("Alice".to_string()),
+                Version::new(1, "A".to_string()),
+            ),
+        );
+        tables1
+            .entry("users".to_string())
+            .or_default()
+            .insert("u1".to_string(), r1);
 
         let mut tables2: BTreeMap<String, BTreeMap<String, Row>> = BTreeMap::new();
         let mut r2 = Row::new("u1");
-        r2.cells.insert("name".to_string(), Cell::new(Value::Text("Bob".to_string()), Version::new(1, "A".to_string())));
-        tables2.entry("users".to_string()).or_default().insert("u1".to_string(), r2);
+        r2.cells.insert(
+            "name".to_string(),
+            Cell::new(
+                Value::Text("Bob".to_string()),
+                Version::new(1, "A".to_string()),
+            ),
+        );
+        tables2
+            .entry("users".to_string())
+            .or_default()
+            .insert("u1".to_string(), r2);
 
         let h1 = SnapshotHasher::hash_tables(&tables1).unwrap();
         let h2 = SnapshotHasher::hash_tables(&tables2).unwrap();

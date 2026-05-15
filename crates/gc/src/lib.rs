@@ -21,7 +21,9 @@ pub fn collect_stable_tombstones(
     tombstones: Vec<Tombstone>,
     global_min_frontier: &Frontier,
 ) -> (Vec<Tombstone>, Vec<Tombstone>) {
-    tombstones.into_iter().partition(|ts| !is_tombstone_stable(ts, global_min_frontier))
+    tombstones
+        .into_iter()
+        .partition(|ts| !is_tombstone_stable(ts, global_min_frontier))
 }
 
 /// Run GC on a TombstoneStore given the global minimum frontier.

@@ -1,14 +1,13 @@
 //! Engine host: manages multiple peer replicas.
 //! Implements the benchmark adapter API via in-memory CRDT engine.
 
-use core::error::CrdtResult;
 use core::types::{Row, Value};
 use hashing::SnapshotHasher;
 use index::IndexManager;
 use replication::ReplicaState;
-use sql::{parser::parse_sql, SqlExecutor};
-use sync::{apply_delta, extract_delta};
+use sql::SqlExecutor;
 use std::collections::BTreeMap;
+use sync::{apply_delta, extract_delta};
 
 pub struct EngineHost {
     peers: BTreeMap<String, (ReplicaState, IndexManager)>,
@@ -17,7 +16,10 @@ pub struct EngineHost {
 
 impl EngineHost {
     pub fn new() -> Self {
-        Self { peers: BTreeMap::new(), executor: SqlExecutor::new() }
+        Self {
+            peers: BTreeMap::new(),
+            executor: SqlExecutor::new(),
+        }
     }
 
     pub fn open_peer(&mut self, peer_id: &str) {
@@ -30,11 +32,14 @@ impl EngineHost {
     }
 
     pub fn apply_schema(&mut self, peer_id: &str, stmts: &[String]) -> Result<(), String> {
-        let (replica, indexes) = self.peers.get_mut(peer_id)
+        let (replica, indexes) = self
+            .peers
+            .get_mut(peer_id)
             .ok_or_else(|| format!("peer {peer_id} not found"))?;
 
         for stmt in stmts {
-            self.executor.execute(replica, indexes, stmt, &[])
+            self.executor
+                .execute(replica, indexes, stmt, &[])
                 .map_err(|e| format!("schema error in '{stmt}': {e}"))?;
         }
         Ok(())
@@ -46,12 +51,16 @@ impl EngineHost {
         sql_stmt: &str,
         params: &[serde_json::Value],
     ) -> Result<serde_json::Value, String> {
-        let (replica, indexes) = self.peers.get_mut(peer_id)
+        let (replica, indexes) = self
+            .peers
+            .get_mut(peer_id)
             .ok_or_else(|| format!("peer {peer_id} not found"))?;
 
         let rust_params: Vec<Value> = params.iter().map(json_to_value).collect();
 
-        let result = self.executor.execute(replica, indexes, sql_stmt, &rust_params)
+        let result = self
+            .executor
+            .execute(replica, indexes, sql_stmt, &rust_params)
             .map_err(|e| format!("execute error: {e}"))?;
 
         // Return rows as JSON array of objects
@@ -59,13 +68,17 @@ impl EngineHost {
             return Ok(serde_json::Value::Null);
         }
 
-        let rows: Vec<serde_json::Value> = result.rows.iter().map(|row| {
-            let mut obj = serde_json::Map::new();
-            for (col, val) in result.columns.iter().zip(row.iter()) {
-                obj.insert(col.clone(), value_to_json(val));
-            }
-            serde_json::Value::Object(obj)
-        }).collect();
+        let rows: Vec<serde_json::Value> = result
+            .rows
+            .iter()
+            .map(|row| {
+                let mut obj = serde_json::Map::new();
+                for (col, val) in result.columns.iter().zip(row.iter()) {
+                    obj.insert(col.clone(), value_to_json(val));
+                }
+                serde_json::Value::Object(obj)
+            })
+            .collect();
 
         Ok(serde_json::Value::Array(rows))
     }
@@ -73,9 +86,13 @@ impl EngineHost {
     pub fn sync(&mut self, peer_a_id: &str, peer_b_id: &str) -> Result<(), String> {
         // Extract deltas without borrowing both peers mutably
         let delta_for_b = {
-            let (a, _) = self.peers.get(peer_a_id)
+            let (a, _) = self
+                .peers
+                .get(peer_a_id)
                 .ok_or_else(|| format!("peer {peer_a_id} not found"))?;
-            let (b, _) = self.peers.get(peer_b_id)
+            let (b, _) = self
+                .peers
+                .get(peer_b_id)
                 .ok_or_else(|| format!("peer {peer_b_id} not found"))?;
             extract_delta(a, &b.frontier)
         };
@@ -107,35 +124,48 @@ impl EngineHost {
     }
 
     pub fn snapshot_hash(&self, peer_id: &str) -> Result<String, String> {
-        let (replica, _) = self.peers.get(peer_id)
+        let (replica, _) = self
+            .peers
+            .get(peer_id)
             .ok_or_else(|| format!("peer {peer_id} not found"))?;
 
         let tables: BTreeMap<String, BTreeMap<String, core::types::Row>> = replica
-            .storage.table_names().into_iter()
-            .filter_map(|name| replica.storage.snapshot_table(&name).map(|t| (name, t.clone())))
+            .storage
+            .table_names()
+            .into_iter()
+            .filter_map(|name| {
+                replica
+                    .storage
+                    .snapshot_table(&name)
+                    .map(|t| (name, t.clone()))
+            })
             .collect();
 
         let tombstones: Vec<_> = replica.tombstones.all().cloned().collect();
         let claims: Vec<_> = replica.uniqueness.all_claims().cloned().collect();
 
-        SnapshotHasher::full_hash(&tables, &tombstones, &claims)
-            .map_err(|e| e.to_string())
+        SnapshotHasher::full_hash(&tables, &tombstones, &claims).map_err(|e| e.to_string())
     }
 
     pub fn snapshot_state(&self, peer_id: &str) -> Result<serde_json::Value, String> {
-        let (replica, _) = self.peers.get(peer_id)
+        let (replica, _) = self
+            .peers
+            .get(peer_id)
             .ok_or_else(|| format!("peer {peer_id} not found"))?;
 
         let mut result = serde_json::Map::new();
 
         // Tables sorted by name (BTreeMap order guarantees this)
         for table_name in replica.storage.table_names() {
-            let unique_cols: Vec<String> = replica.schemas.get(&table_name)
+            let unique_cols: Vec<String> = replica
+                .schemas
+                .get(&table_name)
                 .map(|s| s.unique_columns().iter().map(|c| c.name.clone()).collect())
                 .unwrap_or_default();
 
             // Rows sorted by PK (BTreeMap row store order guarantees this)
-            let rows: Vec<serde_json::Value> = replica.storage
+            let rows: Vec<serde_json::Value> = replica
+                .storage
                 .visible_rows(&table_name)
                 .filter(|row| {
                     // Exclude uniqueness losers — rows that lost the reservation race

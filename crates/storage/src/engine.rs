@@ -43,12 +43,19 @@ impl StorageEngine {
     /// Get only a visible (non-tombstoned) row.
     pub fn get_visible_row(&self, table_id: &str, row_id: &str) -> Option<&Row> {
         let row = self.get_row(table_id, row_id)?;
-        if row.is_visible() { Some(row) } else { None }
+        if row.is_visible() {
+            Some(row)
+        } else {
+            None
+        }
     }
 
     /// Iterate all rows in a table including tombstoned (sorted by row_id — BTreeMap order).
     pub fn all_rows(&self, table_id: &str) -> impl Iterator<Item = &Row> {
-        self.tables.get(table_id).into_iter().flat_map(|t| t.values())
+        self.tables
+            .get(table_id)
+            .into_iter()
+            .flat_map(|t| t.values())
     }
 
     /// Iterate only visible rows (sorted by primary key — BTreeMap order guarantees this).
@@ -125,10 +132,19 @@ mod tests {
     fn visible_rows_sorted_by_id() {
         let mut engine = StorageEngine::new();
         engine.create_table("users");
-        engine.upsert_row("users", make_row("u3", "x", 3, 1, "A")).unwrap();
-        engine.upsert_row("users", make_row("u1", "x", 1, 1, "A")).unwrap();
-        engine.upsert_row("users", make_row("u2", "x", 2, 1, "A")).unwrap();
-        let ids: Vec<_> = engine.visible_rows("users").map(|r| r.id.as_str()).collect();
+        engine
+            .upsert_row("users", make_row("u3", "x", 3, 1, "A"))
+            .unwrap();
+        engine
+            .upsert_row("users", make_row("u1", "x", 1, 1, "A"))
+            .unwrap();
+        engine
+            .upsert_row("users", make_row("u2", "x", 2, 1, "A"))
+            .unwrap();
+        let ids: Vec<_> = engine
+            .visible_rows("users")
+            .map(|r| r.id.as_str())
+            .collect();
         assert_eq!(ids, vec!["u1", "u2", "u3"]); // BTreeMap order
     }
 
@@ -147,7 +163,9 @@ mod tests {
         use crate::serialization::{from_cbor, to_cbor};
         let mut engine = StorageEngine::new();
         engine.create_table("users");
-        engine.upsert_row("users", make_row("u1", "name", 10, 5, "A")).unwrap();
+        engine
+            .upsert_row("users", make_row("u1", "name", 10, 5, "A"))
+            .unwrap();
         let bytes = to_cbor(&engine).unwrap();
         let recovered: StorageEngine = from_cbor(&bytes).unwrap();
         let row = recovered.get_visible_row("users", "u1").unwrap();

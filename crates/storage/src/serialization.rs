@@ -10,8 +10,7 @@ pub fn to_cbor<T: serde::Serialize>(value: &T) -> CrdtResult<Vec<u8>> {
 
 /// Deserialize a value from CBOR bytes.
 pub fn from_cbor<T: serde::de::DeserializeOwned>(data: &[u8]) -> CrdtResult<T> {
-    ciborium::from_reader(data)
-        .map_err(|e| CrdtError::SerializationError(e.to_string()))
+    ciborium::from_reader(data).map_err(|e| CrdtError::SerializationError(e.to_string()))
 }
 
 /// Serialize to JSON (for Python adapter bridge).

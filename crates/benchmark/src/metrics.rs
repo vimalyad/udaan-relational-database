@@ -51,8 +51,17 @@ mod tests {
         let m = BenchMetrics::new(4, 2, 100);
         let s = m.summary();
         assert!(s.contains("peers=4"), "summary must include peer count");
-        assert!(s.contains("sync_rounds=2"), "summary must include sync rounds");
-        assert!(s.contains("rows_exchanged=100"), "summary must include rows exchanged");
-        assert!(s.contains("convergence_time_us=0"), "summary must include convergence time");
+        assert!(
+            s.contains("sync_rounds=2"),
+            "summary must include sync rounds"
+        );
+        assert!(
+            s.contains("rows_exchanged=100"),
+            "summary must include rows exchanged"
+        );
+        assert!(
+            s.contains("convergence_time_us=0"),
+            "summary must include convergence time"
+        );
     }
 }

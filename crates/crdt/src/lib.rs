@@ -46,12 +46,15 @@ mod integration_tests {
     #[test]
     fn merge_commutative_three_peers() {
         let mut a = Row::new("r1");
-        a.cells.insert("name".to_string(), cell_text("Alice", 5, "A"));
-        a.cells.insert("email".to_string(), cell_text("a@x.com", 3, "A"));
+        a.cells
+            .insert("name".to_string(), cell_text("Alice", 5, "A"));
+        a.cells
+            .insert("email".to_string(), cell_text("a@x.com", 3, "A"));
 
         let mut b = Row::new("r1");
         b.cells.insert("name".to_string(), cell_text("Bob", 2, "B"));
-        b.cells.insert("email".to_string(), cell_text("b@x.com", 7, "B"));
+        b.cells
+            .insert("email".to_string(), cell_text("b@x.com", 7, "B"));
 
         assert_eq!(merge_row(&a, &b), merge_row(&b, &a));
     }
@@ -82,14 +85,22 @@ mod integration_tests {
     #[test]
     fn cell_level_merge_preserves_both_columns() {
         let mut a = Row::new("r1");
-        a.cells.insert("name".to_string(), cell_text("Alice Cooper", 10, "A"));
+        a.cells
+            .insert("name".to_string(), cell_text("Alice Cooper", 10, "A"));
 
         let mut b = Row::new("r1");
-        b.cells.insert("email".to_string(), cell_text("alice@ex.org", 8, "B"));
+        b.cells
+            .insert("email".to_string(), cell_text("alice@ex.org", 8, "B"));
 
         let merged = merge_row(&a, &b);
-        assert_eq!(merged.cells.get("name").unwrap().value, Value::Text("Alice Cooper".to_string()));
-        assert_eq!(merged.cells.get("email").unwrap().value, Value::Text("alice@ex.org".to_string()));
+        assert_eq!(
+            merged.cells.get("name").unwrap().value,
+            Value::Text("Alice Cooper".to_string())
+        );
+        assert_eq!(
+            merged.cells.get("email").unwrap().value,
+            Value::Text("alice@ex.org".to_string())
+        );
     }
 
     #[test]
