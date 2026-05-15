@@ -10,11 +10,15 @@ crate-type = ["cdylib", "rlib"]
 core = { path = "../core" }
 crdt = { path = "../crdt" }
 storage = { path = "../storage" }
+replication = { path = "../replication" }
 sync = { path = "../sync" }
 sql = { path = "../sql" }
+index = { path = "../index" }
 hashing = { path = "../hashing" }
+query = { path = "../query" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
+hex = { workspace = true }
 wasm-bindgen = { workspace = true }
