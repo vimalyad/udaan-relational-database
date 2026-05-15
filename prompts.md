@@ -2,160 +2,317 @@
 
 # CRDT Relational Database — Coding Agent Master Prompt
 
-## SYSTEM ROLE
+---
 
-You are building a production-grade distributed relational database with:
+# SYSTEM ROLE
+
+You are implementing a production-grade deterministic distributed relational database using:
 
 - CRDT-based replication
 - local-first/offline-first semantics
+- pairwise anti-entropy synchronization
 - deterministic convergence guarantees
 - Rust + WASM architecture
-- anti-entropy pairwise synchronization
-- deterministic snapshot hashing
 
-The project MUST prioritize:
+The system MUST satisfy:
+- benchmark correctness
+- deterministic replay safety
+- bounded metadata constraints
+- sync-order-independent convergence
+- randomized convergence validation
+
+This is NOT a toy database.
+
+The implementation MUST prioritize:
 
 1. correctness
-2. deterministic convergence
-3. bounded metadata
-4. clean modular architecture
-5. reproducibility
+2. determinism
+3. reproducibility
+4. modularity
+5. replay safety
 6. benchmark alignment
 
-The project is NOT a toy database.
-
-The project MUST be architected for:
-- extensibility
-- deterministic testing
-- peer-to-peer replication
-- distributed systems benchmarking
-
-You MUST follow the architecture decisions exactly.
-
 ---
 
-# GLOBAL PROJECT RULES
+# MANDATORY ARCHITECTURAL RULES
 
-## Mandatory Requirements
+You MUST follow the architecture described in:
+- design_choices.md
+- IMPLEMENTATION.md
 
-You MUST:
-- follow the finalized architecture strictly
-- preserve deterministic behavior everywhere
-- avoid nondeterministic iteration order
-- avoid runtime-dependent serialization
-- maintain bounded metadata semantics
-- implement features incrementally
-- keep the repository always runnable
-- ensure every phase compiles before moving forward
-- keep documentation continuously updated
+STRICTLY.
 
 You MUST NOT:
-- introduce centralized coordination
-- introduce wall-clock conflict resolution
-- introduce row-level LWW semantics
-- introduce unbounded vector clocks
-- introduce distributed ACID coordination
-- break deterministic convergence guarantees
+- invent new consistency semantics
+- introduce hidden coordination
+- introduce nondeterministic behavior
+- change merge semantics
+- change uniqueness semantics
+- change FK semantics
+- change synchronization semantics
+
+without explicitly documenting changes.
 
 ---
 
-# MANDATORY REPOSITORY RULES
+# CORE DATABASE GUARANTEES
 
-## Before Starting Any Work
+The database MUST provide:
 
-If missing, create:
+- deterministic convergence
+- replay-safe synchronization
+- bounded metadata growth
+- disconnected local writes
+- deterministic hashing
+- deterministic indexes
+- deterministic query results
+- deterministic serialization
+
+All replicas MUST converge to:
+- identical rows
+- identical indexes
+- identical tombstones
+- identical metadata
+- identical snapshot hashes
+
+independent of:
+- synchronization order
+- duplicate synchronization
+- delayed synchronization
+- network partitions
+- replay ordering
+
+---
+
+# FORBIDDEN IMPLEMENTATION BEHAVIOR
+
+NEVER:
+- use wall-clock timestamps for conflict resolution
+- use HashMap where ordering matters
+- use runtime-dependent serialization
+- use append-only operation histories
+- use vector clocks with unbounded growth
+- introduce distributed ACID transactions
+- introduce centralized coordination
+- introduce hidden leader election
+- introduce global write ordering
+
+---
+
+# REQUIRED DATA STRUCTURES
+
+Use deterministic collections ONLY.
+
+Mandatory:
+- BTreeMap
+- BTreeSet
+
+Forbidden:
+- HashMap for deterministic state
+- HashSet for deterministic state
+
+---
+
+# REQUIRED VERSIONING MODEL
+
+Conflict resolution MUST use:
+
+```rust
+(counter, peer_id)
+```
+
+Rules:
+- larger counter wins
+- equal counters resolved using deterministic peer_id ordering
+
+No wall-clock timestamps allowed.
+
+---
+
+# REQUIRED MERGE INVARIANTS
+
+ALL merge operations MUST satisfy:
+
+## Associativity
+
+```text
+merge(a, merge(b, c))
+==
+merge(merge(a, b), c)
+```
+
+## Commutativity
+
+```text
+merge(a, b)
+==
+merge(b, a)
+```
+
+## Idempotency
+
+```text
+merge(a, a)
+==
+a
+```
+
+These invariants are REQUIRED.
+
+Breaking them is considered a critical correctness failure.
+
+---
+
+# REQUIRED SYNC MODEL
+
+Synchronization MUST be:
+- anti-entropy based
+- pairwise
+- replay-safe
+- deterministic
+- idempotent
+
+Synchronization MUST support:
+- arbitrary replay
+- duplicate messages
+- delayed synchronization
+- arbitrary sync ordering
+
+---
+
+# REQUIRED SNAPSHOT SEMANTICS
+
+snapshot_state() MUST:
+- return deterministic table ordering
+- return rows sorted by primary key ascending
+- return deterministic column ordering
+- exclude tombstoned rows from normal visibility
+- preserve internal FK linkage
+- exclude runtime-only metadata
+
+snapshot_hash() MUST:
+- be deterministic
+- be stable across machines
+- be independent of sync history
+
+---
+
+# REQUIRED UNIQUENESS SEMANTICS
+
+Uniqueness MUST use:
+- reservation/claim protocol
+
+Conflicting rows MUST:
+- remain internally preserved
+- retain conflict metadata
+- remain recoverable
+
+No silent deletion allowed.
+
+---
+
+# REQUIRED FK SEMANTICS
+
+Foreign keys MUST use:
+- tombstone FK semantics
+
+Parent deletion MUST NOT:
+- destroy concurrent child inserts
+
+Referential linkage MUST remain internally preserved.
+
+---
+
+# REQUIRED ENGINEERING STANDARDS
+
+Mandatory:
+- stable Rust
+- cargo fmt
+- cargo clippy
+- explicit error handling
+- deterministic serialization
+- isolated commits
+- phase-by-phase implementation
+
+Forbidden:
+- unwrap() in critical paths
+- hidden nondeterminism
+- runtime-dependent iteration ordering
+
+---
+
+# REQUIRED DOCUMENTATION RULES
+
+The following files MUST always exist:
 
 - README.md
 - CHANGES.md
 - IMPLEMENTATION.md
-- docs/
-- tests/
-
-These MUST be continuously maintained.
+- design_choices.md
 
 ---
 
-# DOCUMENTATION RULES
-
-## README.md
+# README.md RULES
 
 README.md MUST continuously evolve.
 
-After every completed sub-phase:
-- update architecture overview
+After EVERY completed sub-phase:
 - update implemented features
-- update module structure
-- update build instructions
+- update architecture diagrams
+- update usage examples
 - update current limitations
-- update examples
-- update sync behavior
+- update build instructions
 - update testing status
 
-README must always represent:
-- current working state
+README.md MUST always represent:
+- current repository state
 - current architecture
-- implemented capabilities
+- current implementation coverage
 
 ---
 
-## CHANGES.md
-
-If missing, create at repository root.
+# CHANGES.md RULES
 
 After EVERY:
 - phase
 - sub-phase
-- major refactor
-- bug fix
+- refactor
 - architectural change
+- bug fix
 
 append:
 - what changed
 - why it changed
-- modules affected
+- affected modules
 - migration notes
+- blockers
 - unfinished work
-- known issues
 - future TODOs
-- blockers encountered
 
-CHANGES.md must allow:
-- another coding agent
-- another contributor
-- another CI system
-
-to continue implementation from any checkpoint.
+CHANGES.md MUST allow another coding agent to continue implementation from any checkpoint.
 
 ---
 
-## IMPLEMENTATION.md
+# IMPLEMENTATION.md RULES
 
-This file MUST contain:
-- implementation details
+IMPLEMENTATION.md MUST continuously document:
 - invariants
 - merge semantics
-- sync rules
+- sync semantics
+- hashing rules
 - serialization rules
-- deterministic guarantees
-- storage format
-- index semantics
-- metadata semantics
-- hashing guarantees
-- testing strategy
-- module boundaries
-
-This file acts as:
-- engineering specification
-- internal protocol reference
-- contributor guide
-
-It MUST be continuously updated.
+- module responsibilities
+- implementation details
+- recovery semantics
+- testing requirements
 
 ---
 
-# GIT WORKFLOW RULES
+# REQUIRED GIT WORKFLOW
 
-## Branching Strategy
+---
+
+# BRANCHING RULES
 
 For EVERY phase:
 
@@ -173,24 +330,24 @@ Examples:
 
 ```bash
 feature/core-crdt-engine
-feature/core-crdt-engine-row-merge
-feature/sync-engine-frontier-sync
-feature/sql-parser
+feature/core-crdt-engine-merge
+feature/storage-engine-serialization
+feature/sync-engine-frontiers
 ```
 
 ---
 
 # COMMIT RULES
 
-Every sub-part MUST have:
-- isolated commit
-- meaningful commit message
-- compiling state
-- passing tests
+Every sub-part MUST:
+- compile
+- pass tests
+- update documentation
+- use isolated commit
 
 ---
 
-# COMMIT MESSAGE FORMAT
+# COMMIT FORMAT
 
 ```text
 [type] scope: summary
@@ -199,671 +356,429 @@ Every sub-part MUST have:
 Examples:
 
 ```text
-[feat] crdt: implement cell-level merge semantics
-[feat] sync: add frontier comparison engine
-[fix] hashing: enforce deterministic map ordering
-[refactor] storage: isolate serialization layer
-[test] replication: randomized convergence tests
-[docs] architecture: update sync protocol docs
+[feat] crdt: implement deterministic cell merge semantics
+[feat] sync: implement frontier reconciliation
+[fix] hashing: enforce canonical ordering
+[test] replication: add randomized convergence tests
+[docs] architecture: update synchronization semantics
 ```
 
 ---
 
-# REQUIRED PHASE EXECUTION MODEL
+# REQUIRED IMPLEMENTATION EXECUTION MODEL
 
-For EVERY phase:
+For EVERY sub-phase:
 
 1. create branch
-2. update README plan section
-3. update IMPLEMENTATION.md plan section
-4. implement sub-part incrementally
-5. write tests immediately
-6. run formatting
-7. run linting
+2. update README planning section
+3. update IMPLEMENTATION.md planning section
+4. implement feature incrementally
+5. immediately add tests
+6. run cargo fmt
+7. run cargo clippy
 8. run tests
 9. update CHANGES.md
-10. commit
-11. merge only after stable compilation
+10. create isolated commit
+11. verify deterministic behavior
+
+The repository MUST remain:
+- buildable
+- testable
+- resumable
+- replay-safe
+- deterministic
+
+at ALL times.
 
 ---
 
-# REQUIRED ENGINEERING STANDARDS
-
-## Rust Standards
-
-Mandatory:
-- stable Rust
-- cargo fmt
-- cargo clippy
-- no unwrap() in critical paths
-- explicit error handling
-- deterministic data structures
-- avoid hidden allocation-heavy behavior
-
-Preferred crates:
-- serde
-- serde_cbor
-- blake3
-- thiserror
-- anyhow
-- sqlparser-rs
-- tokio
-- uuid
-- indexmap
-
----
-
-# DETERMINISM RULES
-
-All logic MUST be deterministic.
-
-Mandatory:
-- deterministic iteration ordering
-- canonical serialization ordering
-- stable hashing inputs
-- stable index ordering
-- stable conflict resolution
-
-Never rely on:
-- HashMap iteration order
-- wall-clock timestamps
-- OS-dependent ordering
-- async race ordering
-
-Use:
-- BTreeMap
-- sorted collections
-- canonical sorting
-
-wherever ordering matters.
-
----
-
-# TESTING RULES
+# REQUIRED TESTING STRATEGY
 
 Every major feature MUST include:
 
 ## Unit Tests
 - merge semantics
+- Lamport ordering
 - tombstones
-- uniqueness
 - serialization
 - hashing
-- sync logic
+
+---
 
 ## Integration Tests
-- pairwise sync
-- delayed sync
-- partition recovery
-- randomized sync order
-- duplicate message replay
-- tombstone convergence
-
-## Property Tests
-- convergence invariants
-- commutativity
-- associativity
-- idempotency
-
-## Determinism Tests
-- identical snapshot hashes
-- deterministic serialization
-- deterministic indexes
-
----
-
-# REQUIRED FINAL CONVERGENCE PROPERTY
-
-All replicas MUST converge to:
-- identical rows
-- identical indexes
-- identical tombstones
-- identical metadata
-- identical hashes
-
-independent of:
-- sync ordering
-- network partitions
-- replay order
+- pairwise synchronization
 - delayed synchronization
 - duplicate synchronization
+- partition recovery
+- replay safety
 
 ---
 
-# FINALIZED ARCHITECTURE DECISIONS
-
-## Database Model
-- relational CRDT database
-
-## Conflict Resolution
-- cell-level CRDT semantics
-
-## Versioning
-- Lamport clocks + deterministic peer_id tie-break
-
-## Deletes
-- tombstone + delete-wins visibility
-
-## Sync
-- frontier-based anti-entropy synchronization
-
-## Storage
-- materialized canonical row store
-
-## Transactions
-- row-level atomicity
-- local replica transactions only
-
-## Reads
-- local canonical replica reads
-
-## Indexes
-- deterministic derived indexes
-
-## FK Policy
-- tombstone FK semantics
-
-## Uniqueness
-- reservation/claim-based uniqueness
-
-## Serialization
-- canonical deterministic serialization
-
-## Hashing
-- deterministic cryptographic snapshot hashing
-
-## Metadata Constraints
-- bounded metadata
-- no unbounded vector clocks
-
-## Language
-- Rust
-
-## Runtime
-- WASM
+## Property Tests
+- associativity
+- commutativity
+- idempotency
 
 ---
 
-# IMPLEMENTATION PHASES
+## Determinism Tests
+- deterministic hashes
+- deterministic indexes
+- deterministic serialization
+- deterministic query results
+
+---
+
+# REQUIRED PHASE EXECUTION ORDER
+
+The coding agent MUST implement phases IN ORDER.
+
+DO NOT skip phases.
+
+---
 
 # PHASE 1 — Repository Bootstrap
 
-## Branch
+Branch:
 
 ```bash
 feature/repository-bootstrap
 ```
 
-## Goals
-
-Create:
+Required:
 - cargo workspace
-- module skeleton
-- README.md
-- CHANGES.md
-- IMPLEMENTATION.md
+- crate structure
 - CI setup
-- formatting/linting setup
-- deterministic dependency policy
+- deterministic utility layer
+- base documentation
 
-## Sub-Parts
+Required commits:
 
-### 1.1 Workspace Setup
-- cargo workspace
-- module crates
-- shared types crate
-
-### 1.2 Tooling
-- rustfmt
-- clippy
-- cargo deny
-- CI workflows
-
-### 1.3 Documentation Bootstrap
-- README
-- CHANGES
-- IMPLEMENTATION
-
-### 1.4 Deterministic Utilities
-- canonical sorting helpers
-- deterministic serialization helpers
-
-## Required Tests
-- compilation tests
-- formatting validation
+```text
+[feat] bootstrap: initialize cargo workspace
+[feat] tooling: configure CI and linting
+[docs] bootstrap: initialize documentation
+```
 
 ---
 
 # PHASE 2 — Core CRDT Engine
 
-## Branch
+Branch:
 
 ```bash
 feature/core-crdt-engine
 ```
 
-## Goals
-
-Implement:
-- Row
-- Cell
+Required:
 - Version
+- Cell
+- Row
+- Lamport clocks
 - merge semantics
-- Lamport logic
-- deterministic tie-breaks
+- tombstones
+- uniqueness claims
 
-## Sub-Parts
+Required commits:
 
-### 2.1 Core Types
-- Row
-- Cell
-- Version
-- PeerId
-- Tombstone
-
-### 2.2 Lamport Engine
-- logical counters
-- merge updates
-- peer frontier tracking
-
-### 2.3 Cell Merge Logic
-- deterministic merge semantics
-- concurrent update handling
-
-### 2.4 Tombstone Semantics
-- delete-wins visibility
-- preserved merge state
-
-### 2.5 Uniqueness Claims
-- claim protocol
-- conflict metadata
-
-## Required Tests
-- merge associativity
-- merge commutativity
-- idempotency
-- uniqueness convergence
-- deterministic tie-break tests
+```text
+[feat] crdt: implement core CRDT structures
+[feat] crdt: implement Lamport clock engine
+[feat] crdt: implement deterministic merge semantics
+[feat] crdt: implement tombstone semantics
+[feat] crdt: implement uniqueness claim protocol
+```
 
 ---
 
 # PHASE 3 — Storage Engine
 
-## Branch
+Branch:
 
 ```bash
 feature/storage-engine
 ```
 
-## Goals
-
-Implement:
-- materialized row persistence
-- metadata persistence
-- canonical serialization
-- deterministic storage layout
-
-## Sub-Parts
-
-### 3.1 Row Storage
-- canonical row persistence
-
-### 3.2 Metadata Storage
-- peer frontiers
-- tombstones
-- uniqueness metadata
-
-### 3.3 Serialization
-- CBOR or MessagePack
-- canonical ordering
-
-### 3.4 Persistence Recovery
-- startup loading
-- corruption handling
-
-## Required Tests
+Required:
+- canonical persistence
 - deterministic serialization
-- storage roundtrip tests
-- recovery tests
+- metadata persistence
+- recovery semantics
+
+Required commits:
+
+```text
+[feat] storage: implement canonical persistence
+[feat] storage: implement deterministic serialization
+[feat] storage: implement recovery semantics
+```
 
 ---
 
 # PHASE 4 — Replication & Sync Engine
 
-## Branch
+Branch:
 
 ```bash
 feature/sync-engine
 ```
 
-## Goals
-
-Implement:
-- frontier sync
+Required:
+- frontier comparison
 - delta extraction
-- reconciliation
-- anti-entropy replication
+- replay-safe synchronization
+- deterministic reconciliation
+- convergence hashing
 
-## Sub-Parts
+Required commits:
 
-### 4.1 Frontier Comparison
-- missing delta detection
-
-### 4.2 Delta Extraction
-- changed rows only
-
-### 4.3 Sync Session Engine
-- handshake
-- frontier exchange
-
-### 4.4 Deterministic Merge Application
-- apply deltas
-- resolve conflicts
-
-### 4.5 Snapshot Hash Validation
-- convergence verification
-
-## Required Tests
-- pairwise sync
-- delayed sync
-- replayed sync
-- randomized sync order
-- partition healing
-- convergence proofs
+```text
+[feat] sync: implement frontier comparison
+[feat] sync: implement delta extraction
+[feat] sync: implement sync sessions
+[feat] sync: implement deterministic reconciliation
+[feat] hashing: implement convergence hashing
+```
 
 ---
 
 # PHASE 5 — Secondary Indexes
 
-## Branch
+Branch:
 
 ```bash
 feature/index-engine
 ```
 
-## Goals
-
-Implement:
-- derived indexes
+Required:
+- deterministic indexes
+- incremental maintenance
 - deterministic range scans
-- index rebuild/update logic
 
-## Sub-Parts
+Required commits:
 
-### 5.1 Index Structures
-- deterministic ordered indexes
-
-### 5.2 Incremental Updates
-- update indexes on writes
-
-### 5.3 Range Queries
-- deterministic traversal
-
-## Required Tests
-- index convergence
-- deterministic ordering
-- range query stability
+```text
+[feat] index: implement deterministic indexes
+[feat] index: implement incremental index maintenance
+[feat] index: implement deterministic range scans
+```
 
 ---
 
-# PHASE 6 — SQL Layer
+# PHASE 6 — SQL Engine
 
-## Branch
+Branch:
 
 ```bash
 feature/sql-engine
 ```
 
-## Goals
-
-Implement:
-- SQL parsing
-- local query execution
-- deterministic query semantics
-
-## Sub-Parts
-
-### 6.1 SQL Parser Integration
+Required:
 - sqlparser-rs integration
+- schema engine
+- deterministic query execution
+- write execution
 
-### 6.2 Schema Engine
-- CREATE TABLE
-- CREATE INDEX
-- UNIQUE
-- FK
+Required commits:
 
-### 6.3 Query Execution
-- SELECT
-- WHERE
-- ORDER BY
-- LIMIT
-
-### 6.4 Write Execution
-- INSERT
-- UPDATE
-- DELETE
-
-## Required Tests
-- deterministic query output
-- schema correctness
-- FK semantics
+```text
+[feat] sql: integrate sqlparser-rs
+[feat] sql: implement schema engine
+[feat] sql: implement deterministic query execution
+[feat] sql: implement write execution
+```
 
 ---
 
 # PHASE 7 — Transactions
 
-## Branch
+Branch:
 
 ```bash
 feature/transaction-engine
 ```
 
-## Goals
-
-Implement:
-- local transactions
+Required:
+- local transaction context
 - row-level atomicity
-- rollback handling
+- rollback semantics
+- crash-safe recovery
 
-## Sub-Parts
+Required commits:
 
-### 7.1 Transaction Context
-- begin/commit/rollback
-
-### 7.2 Atomic Local Writes
-- row-level commit semantics
-
-### 7.3 Recovery Semantics
-- crash-safe local state
-
-## Required Tests
-- rollback correctness
-- partial failure handling
+```text
+[feat] txn: implement transaction context
+[feat] txn: implement atomic local writes
+[feat] txn: implement recovery semantics
+```
 
 ---
 
 # PHASE 8 — Garbage Collection
 
-## Branch
+Branch:
 
 ```bash
 feature/tombstone-gc
 ```
 
-## Goals
+Required:
+- causal stability tracking
+- tombstone reclamation
+- metadata compaction
 
-Implement:
-- causal-stability GC
-- metadata cleanup
+Required commits:
 
-## Sub-Parts
-
-### 8.1 Frontier Stability Checks
-
-### 8.2 Tombstone Reclamation
-
-### 8.3 Metadata Compaction
-
-## Required Tests
-- no resurrection
-- delayed sync safety
+```text
+[feat] gc: implement causal stability tracking
+[feat] gc: implement tombstone reclamation
+[feat] gc: implement metadata compaction
+```
 
 ---
 
 # PHASE 9 — WASM Runtime
 
-## Branch
+Branch:
 
 ```bash
 feature/wasm-runtime
 ```
 
-## Goals
+Required:
+- wasm-bindgen integration
+- browser persistence
+- JS interop APIs
 
-Implement:
-- WASM compilation
-- browser runtime
-- local-first execution
+Required commits:
 
-## Sub-Parts
-
-### 9.1 WASM Bindings
-
-### 9.2 Browser Storage
-
-### 9.3 JS Interop API
-
-## Required Tests
-- browser execution
-- deterministic WASM behavior
+```text
+[feat] wasm: implement wasm bindings
+[feat] wasm: implement browser persistence
+[feat] wasm: implement JavaScript interop APIs
+```
 
 ---
 
-# PHASE 10 — Networking Layer
+# PHASE 10 — Networking
 
-## Branch
+Branch:
 
 ```bash
 feature/networking
 ```
 
-## Goals
-
-Implement:
-- peer communication
+Required:
+- transport abstraction
 - sync transport
-- websocket/WebRTC abstraction
+- peer sessions
 
-## Sub-Parts
+Required commits:
 
-### 10.1 Transport Abstraction
-
-### 10.2 Sync Payload Protocol
-
-### 10.3 Peer Session Handling
-
-## Required Tests
-- delayed transport
-- duplicate replay
-- partial sync recovery
+```text
+[feat] network: implement transport abstraction
+[feat] network: implement sync transport
+[feat] network: implement peer session handling
+```
 
 ---
 
-# PHASE 11 — Benchmark & Validation Suite
+# PHASE 11 — Python Adapter
 
-## Branch
+Branch:
+
+```bash
+feature/python-adapter
+```
+
+Required:
+- benchmark adapter API
+- Rust bridge layer
+- deterministic snapshot bridge
+- harness compatibility
+
+Required commits:
+
+```text
+[feat] adapter: implement benchmark adapter interface
+[feat] adapter: implement Rust bridge layer
+[test] adapter: validate benchmark harness compatibility
+```
+
+---
+
+# PHASE 12 — Benchmark Suite
+
+Branch:
 
 ```bash
 feature/benchmark-suite
 ```
 
-## Goals
+Required:
+- randomized synchronization testing
+- partition simulation
+- convergence verification
+- benchmark metrics
 
-Implement:
-- randomized convergence tests
-- benchmark scenarios
-- deterministic replay validation
+Required commits:
 
-## Sub-Parts
-
-### 11.1 Randomized Sync Simulation
-
-### 11.2 Partition Simulation
-
-### 11.3 Snapshot Hash Validation
-
-### 11.4 Benchmark Metrics
-
-## Required Tests
-- randomized convergence
-- identical final hashes
-- metadata bounds
+```text
+[test] benchmark: implement randomized synchronization tests
+[test] benchmark: implement partition simulation
+[test] benchmark: implement convergence validation
+[feat] benchmark: implement benchmark metrics
+```
 
 ---
 
-# PHASE 12 — Documentation & Release Stabilization
+# PHASE 13 — Release Stabilization
 
-## Branch
+Branch:
 
 ```bash
 feature/release-stabilization
 ```
 
-## Goals
-
-Finalize:
-- README
-- architecture docs
-- benchmarks
+Required:
+- final documentation
 - examples
-- API docs
-- deployment docs
+- deployment instructions
+- release validation
 
-## Sub-Parts
+Required commits:
 
-### 12.1 Final README
-
-### 12.2 Architecture Documentation
-
-### 12.3 Example Workflows
-
-### 12.4 Release Validation
+```text
+[docs] release: finalize documentation
+[docs] release: add deployment examples
+[test] release: finalize validation suite
+```
 
 ---
 
-# REQUIRED FINAL OUTPUT
+# FINAL SUCCESS CRITERIA
 
 The final project MUST provide:
+
 - deterministic CRDT relational database
 - local-first execution
 - offline-first replication
-- pairwise anti-entropy synchronization
+- anti-entropy synchronization
 - deterministic convergence
+- replay-safe synchronization
 - bounded metadata
-- reproducible snapshot hashing
-- Rust + WASM runtime
+- deterministic hashing
+- deterministic indexes
 - deterministic relational queries
-- benchmark-ready convergence proofs
+- Rust + WASM runtime
+- benchmark-compatible adapter layer
+- randomized convergence validation
+- partition-tolerant synchronization
+- hidden-chaos-test resilience
 
----
-
-# FINAL AGENT INSTRUCTIONS
-
-At the end of EVERY sub-phase:
-
-You MUST:
-1. ensure project compiles
-2. ensure tests pass
-3. update README.md
-4. update CHANGES.md
-5. update IMPLEMENTATION.md
-6. create proper git commit
-7. document unfinished work
-8. document known limitations
-9. document next implementation target
-
-The repository MUST always remain:
+The final repository MUST be:
 - buildable
 - testable
-- resumable by another agent
-- deterministically reproducible
+- resumable
+- reproducible
+- benchmark-ready

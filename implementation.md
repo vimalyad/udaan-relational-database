@@ -2,7 +2,9 @@
 
 # CRDT Relational Database — Implementation Specification
 
-## Project Overview
+---
+
+# 1. Project Overview
 
 This project implements a deterministic distributed relational database using:
 
@@ -10,138 +12,105 @@ This project implements a deterministic distributed relational database using:
 - local-first/offline-first semantics
 - pairwise anti-entropy synchronization
 - deterministic convergence guarantees
-- Rust + WASM architecture
+- Rust + WASM runtime
 
-The system is designed specifically for:
+The implementation prioritizes:
+
+1. correctness
+2. deterministic convergence
+3. bounded metadata
+4. replay-safe synchronization
+5. modular architecture
+6. benchmark compatibility
+
+The system is specifically designed for:
 - disconnected peers
-- deterministic state convergence
-- bounded metadata
-- conflict-preserving replication
+- partition-tolerant replication
+- deterministic state reconciliation
+- randomized synchronization replay
 - distributed systems benchmarking
 
-The implementation MUST prioritize:
-1. correctness
-2. determinism
-3. reproducibility
-4. bounded metadata growth
-5. modularity
-6. benchmark alignment
+---
+
+# 2. High-Level System Architecture
+
+```text
+Client/API
+    ↓
+SQL Layer
+    ↓
+Parser
+    ↓
+Query Engine
+    ↓
+Transaction Layer
+    ↓
+CRDT Merge Layer
+    ↓
+Replication Layer
+    ↓
+Storage Engine
+```
 
 ---
 
-# Core Architectural Goals
+# 3. Repository Structure
 
-The database MUST:
-
-- support relational semantics
-- support disconnected local writes
-- synchronize using pairwise anti-entropy
-- converge deterministically
-- avoid centralized coordination
-- preserve causal history
-- support bounded metadata growth
-- support deterministic hashing
-- support browser + native runtimes via WASM
-
----
-
-# Fundamental Design Decisions
-
-## Database Model
-- relational database
-- CRDT-based replication
-- local-first/offline-first
-
-## Conflict Resolution
-- cell-level CRDT semantics
-- NOT row-level LWW
-
-## Versioning
-- Lamport logical clocks
-- deterministic peer_id tie-breaks
-
-## Deletes
-- tombstone-based delete-wins visibility semantics
-
-## Synchronization
-- frontier-based anti-entropy synchronization
-
-## Reads
-- local canonical replica reads only
-
-## Storage
-- materialized canonical row storage
-
-## Transactions
-- local replica atomicity only
-
-## Foreign Keys
-- tombstone FK semantics
-
-## Uniqueness
-- reservation/claim-based uniqueness protocol
-
-## Indexes
-- deterministic derived indexes
-
-## Metadata Constraints
-- bounded metadata only
-- no unbounded vector clocks
-- no append-only causal histories
-
-## Runtime
-- Rust + WASM
+```text
+root/
+├── Cargo.toml
+├── README.md
+├── CHANGES.md
+├── IMPLEMENTATION.md
+├── design_choices.md
+├── docs/
+├── tests/
+├── benches/
+├── scripts/
+├── adapter/
+├── wasm/
+└── crates/
+    ├── core/
+    ├── crdt/
+    ├── storage/
+    ├── replication/
+    ├── sync/
+    ├── query/
+    ├── sql/
+    ├── index/
+    ├── transaction/
+    ├── hashing/
+    ├── gc/
+    ├── metadata/
+    ├── network/
+    ├── adapter/
+    └── wasm-runtime/
+```
 
 ---
 
-# Non-Goals
+# 4. Mandatory Engineering Constraints
 
-The system intentionally DOES NOT implement:
+## Determinism
 
-- distributed ACID transactions
-- global serializable isolation
-- realtime op-based replication
-- centralized coordination
-- full PostgreSQL compatibility
-- distributed joins
-- recursive query planning
-- wall-clock conflict resolution
-- unbounded operation logs
+ALL logic MUST be deterministic.
 
----
-
-# Determinism Requirements
-
-ALL system behavior MUST be deterministic.
-
-This includes:
-- serialization
-- merge ordering
-- index ordering
-- snapshot hashing
-- conflict resolution
-- sync reconciliation
-
----
-
-# Determinism Rules
-
-NEVER rely on:
+Never rely on:
 - HashMap iteration order
 - wall-clock timestamps
-- OS scheduling order
-- async race order
+- async execution ordering
+- OS scheduling behavior
 - runtime-specific serialization order
 
-ALWAYS use:
+Always use:
 - BTreeMap
 - canonical sorting
-- explicit ordering
 - stable serialization
+- deterministic merge ordering
 
 ---
 
-# Metadata Bound Requirements
+## Metadata Constraints
 
 Metadata MUST remain bounded.
 
@@ -150,370 +119,46 @@ Allowed:
 - peer frontier metadata
 
 Forbidden:
-- per-operation vector clocks
-- unbounded version histories
-- append-only causal DAGs
+- unbounded vector clocks
+- append-only operation logs
+- per-write causal histories
 
-Metadata complexity target:
+Target complexity:
+
 ```text
 O(writers_per_row)
 ```
 
 NOT:
+
 ```text
 O(total_operations)
 ```
 
 ---
 
-# Convergence Guarantee
-
-All replicas MUST converge to:
-- identical rows
-- identical indexes
-- identical tombstones
-- identical metadata
-- identical snapshot hashes
-
-independent of:
-- sync order
-- delayed synchronization
-- replay order
-- duplicate messages
-- network partitions
-
----
-
-# Repository Structure
-
-```text
-src/
-├── sql/
-├── parser/
-├── query/
-├── storage/
-├── crdt/
-├── replication/
-├── sync/
-├── index/
-├── transaction/
-├── gc/
-├── hashing/
-├── metadata/
-├── network/
-└── tests/
-```
-
----
-
-# Module Responsibilities
-
-## parser/
-Responsible for:
-- SQL parsing
-- AST generation
-- parser integration
-
-Recommended:
-- sqlparser-rs
-
----
-
-## query/
-Responsible for:
-- SELECT execution
-- filtering
-- sorting
-- LIMIT
-- joins
-- deterministic local reads
-
----
-
-## storage/
-Responsible for:
-- persistence
-- serialization
-- row materialization
-- metadata persistence
-
-MUST NOT contain:
-- CRDT merge logic
-
----
-
-## crdt/
-Responsible for:
-- cell merge semantics
-- Lamport ordering
-- tombstone semantics
-- uniqueness resolution
-- deterministic conflict resolution
-
-This is the CORE database logic.
-
----
-
-## replication/
-Responsible for:
-- frontier tracking
-- delta extraction
-- reconciliation orchestration
-
----
-
-## sync/
-Responsible for:
-- sync sessions
-- peer handshake
-- frontier exchange
-- transport abstraction
-
----
-
-## index/
-Responsible for:
-- derived indexes
-- deterministic ordering
-- rebuild/update logic
-
----
-
-## transaction/
-Responsible for:
-- local transaction batching
-- commit/rollback
-- row-level atomicity
-
----
-
-## gc/
-Responsible for:
-- tombstone garbage collection
-- metadata cleanup
-- causal stability checks
-
----
-
-## hashing/
-Responsible for:
-- canonical serialization
-- deterministic hashing
-- snapshot verification
-
----
-
-## metadata/
-Responsible for:
-- peer metadata
-- schema metadata
-- frontier metadata
-- sync metadata
-
----
-
-## network/
-Responsible for:
-- websocket/WebRTC abstraction
-- browser transport
-- sync transport APIs
-
-MUST NOT contain:
-- CRDT merge logic
-
----
-
-# Core Data Structures
-
-## Version
-
-```rust
-struct Version {
-    counter: u64,
-    peer_id: PeerId,
-}
-```
-
-Rules:
-- larger counter wins
-- equal counters resolved via deterministic peer_id ordering
-
----
-
-## Cell
-
-```rust
-struct Cell {
-    value: Value,
-    version: Version,
-}
-```
-
----
-
-## Row
-
-```rust
-struct Row {
-    id: RowId,
-    cells: BTreeMap<ColumnId, Cell>,
-    deleted: bool,
-}
-```
-
----
-
-## Frontier
-
-```rust
-type Frontier = BTreeMap<PeerId, u64>;
-```
-
-Tracks:
-- maximum observed Lamport counters per peer
-
----
-
-# Delete Semantics
-
-Deletes are:
-- tombstone-based
-- delete-wins for visibility
-
-Delete MUST:
-- preserve row physically
-- preserve merge history
-- prevent resurrection
-
-Queries MUST:
-- exclude tombstoned rows by default
-
----
-
-# FK Semantics
-
-Foreign keys use:
-- tombstone semantics
-
-Behavior:
-- child survives parent deletion
-- parent becomes tombstoned
-- referential linkage preserved
-
----
-
-# Uniqueness Semantics
-
-Uniqueness is implemented using:
-- reservation/claim-based protocol
-
-Concurrent conflicts:
-- resolved deterministically
-- losing rows preserved
-- conflict metadata retained
-
-No silent deletion allowed.
-
----
-
-# Index Semantics
-
-Indexes are:
-- derived state
+## Synchronization Constraints
+
+Synchronization MUST be:
+- replay-safe
+- idempotent
 - deterministic
-- rebuildable
+- partition-tolerant
 
-Indexes MUST:
-- converge deterministically
-- exclude tombstoned rows
-- use canonical ordering
+Repeated synchronization MUST converge.
 
 ---
 
-# Snapshot Hashing
+## Availability Constraints
 
-Snapshot hashing MUST:
-- produce identical hashes on converged replicas
-- ignore runtime ordering artifacts
-
-Recommended hash:
-- BLAKE3
-
-Serialization MUST be:
-- canonical
-- deterministic
-- stable
+Local writes MUST:
+- succeed offline
+- never require central coordination
+- never block on remote peers
 
 ---
 
-# Sync Semantics
-
-Synchronization is:
-- pairwise
-- anti-entropy
-- frontier-based
-
-Sync MUST:
-- exchange only deltas
-- support replay safety
-- support delayed synchronization
-- support duplicate messages
-
----
-
-# Transaction Semantics
-
-Transactions are:
-- local only
-- row-level atomic
-
-NOT supported:
-- distributed serializable isolation
-- distributed ACID
-
----
-
-# SQL Scope
-
-Supported:
-- CREATE TABLE
-- CREATE INDEX
-- PRIMARY KEY
-- UNIQUE
-- FOREIGN KEY
-- INSERT
-- UPDATE
-- DELETE
-- SELECT
-- WHERE
-- ORDER BY
-- LIMIT
-
-Optional:
-- INNER JOIN
-
-Not supported initially:
-- recursive queries
-- distributed joins
-- triggers
-- stored procedures
-- query optimization engine
-
----
-
-# Serialization Format
-
-Recommended:
-- CBOR
-
-Requirements:
-- deterministic ordering
-- stable encoding
-- canonical serialization
-
----
-
-# Required Crates
+# 5. Core Runtime Dependencies
 
 Recommended crates:
 
@@ -527,23 +172,143 @@ sqlparser
 tokio
 uuid
 indexmap
+wasm-bindgen
+pyo3
 ```
 
 ---
 
-# Engineering Standards
+# 6. Core Data Structures
 
-Mandatory:
-- cargo fmt
-- cargo clippy
-- stable Rust
-- no unwrap() in critical paths
-- explicit error handling
-- deterministic collections
+## Version
+
+```rust
+pub struct Version {
+    pub counter: u64,
+    pub peer_id: PeerId,
+}
+```
+
+Rules:
+- larger counter wins
+- equal counters resolved by deterministic peer_id ordering
 
 ---
 
-# REQUIRED IMPLEMENTATION PHASES
+## Cell
+
+```rust
+pub struct Cell {
+    pub value: Value,
+    pub version: Version,
+}
+```
+
+---
+
+## Row
+
+```rust
+pub struct Row {
+    pub id: RowId,
+    pub cells: BTreeMap<ColumnId, Cell>,
+    pub deleted: bool,
+}
+```
+
+---
+
+## Frontier
+
+```rust
+pub type Frontier = BTreeMap<PeerId, u64>;
+```
+
+---
+
+## Tombstone
+
+```rust
+pub struct Tombstone {
+    pub row_id: RowId,
+    pub version: Version,
+}
+```
+
+---
+
+## UniquenessClaim
+
+```rust
+pub struct UniquenessClaim {
+    pub value: String,
+    pub owner_row: RowId,
+    pub version: Version,
+}
+```
+
+---
+
+# 7. Merge Invariants
+
+ALL merges MUST satisfy:
+
+## Associativity
+
+```text
+merge(a, merge(b, c))
+==
+merge(merge(a, b), c)
+```
+
+---
+
+## Commutativity
+
+```text
+merge(a, b)
+==
+merge(b, a)
+```
+
+---
+
+## Idempotency
+
+```text
+merge(a, a)
+==
+a
+```
+
+These guarantees are REQUIRED for:
+- replay-safe sync
+- duplicate-message tolerance
+- randomized sync-order convergence
+- anti-entropy correctness
+
+---
+
+# 8. Snapshot State Requirements
+
+snapshot_state() MUST:
+- return deterministic table ordering
+- return rows sorted by PK ascending
+- return deterministic column ordering
+- exclude tombstoned rows from normal visibility
+- preserve internal FK semantics
+- exclude runtime-only metadata
+
+Snapshot hashes MUST be:
+- bit-identical across replicas
+- independent of sync ordering
+- independent of runtime memory layout
+
+---
+
+# 9. Required Phases
+
+---
 
 # PHASE 1 — Repository Bootstrap
 
@@ -553,22 +318,38 @@ Mandatory:
 feature/repository-bootstrap
 ```
 
-## Tasks
+---
 
-### 1.1 Workspace Setup
+## Goals
+
 Create:
 - cargo workspace
-- module crates
+- module skeleton
+- CI setup
+- deterministic utility layer
+- documentation foundation
+
+---
+
+## Sub-Tasks
+
+### 1.1 Cargo Workspace
+
+Create:
+- root Cargo.toml
+- workspace crates
 - shared types crate
 
 Commit:
+
 ```text
-[feat] bootstrap: initialize cargo workspace structure
+[feat] bootstrap: initialize cargo workspace
 ```
 
 ---
 
-### 1.2 Tooling Setup
+### 1.2 Tooling
+
 Configure:
 - rustfmt
 - clippy
@@ -576,34 +357,49 @@ Configure:
 - CI workflows
 
 Commit:
+
 ```text
-[feat] tooling: configure linting formatting and CI
+[feat] tooling: configure formatting linting and CI
 ```
 
 ---
 
-### 1.3 Documentation Bootstrap
+### 1.3 Documentation
+
 Create:
 - README.md
 - CHANGES.md
 - IMPLEMENTATION.md
+- design_choices.md
 
 Commit:
+
 ```text
-[docs] bootstrap: add initial project documentation
+[docs] bootstrap: initialize project documentation
 ```
 
 ---
 
-### 1.4 Deterministic Utility Layer
+### 1.4 Deterministic Utilities
+
 Implement:
-- canonical sorting helpers
-- deterministic serialization utilities
+- canonical ordering helpers
+- serialization utilities
+- deterministic hashing helpers
 
 Commit:
+
 ```text
-[feat] utils: add deterministic ordering utilities
+[feat] utils: implement deterministic utilities
 ```
+
+---
+
+## Required Tests
+
+- workspace compilation
+- formatting validation
+- lint validation
 
 ---
 
@@ -615,30 +411,49 @@ Commit:
 feature/core-crdt-engine
 ```
 
-## Tasks
+---
+
+## Goals
+
+Implement:
+- Version
+- Cell
+- Row
+- Lamport clocks
+- merge semantics
+- tombstones
+- uniqueness claims
+
+---
+
+## Sub-Tasks
 
 ### 2.1 Core Types
+
 Implement:
-- Row
-- Cell
 - Version
-- PeerId
+- Cell
+- Row
 - Tombstone
+- Frontier
 
 Commit:
+
 ```text
-[feat] crdt: implement core CRDT data structures
+[feat] crdt: implement core CRDT structures
 ```
 
 ---
 
-### 2.2 Lamport Engine
+### 2.2 Lamport Clock Engine
+
 Implement:
-- Lamport clocks
-- counter updates
+- counter increments
 - frontier tracking
+- synchronization updates
 
 Commit:
+
 ```text
 [feat] crdt: implement Lamport clock engine
 ```
@@ -646,11 +461,13 @@ Commit:
 ---
 
 ### 2.3 Cell Merge Semantics
+
 Implement:
 - deterministic merge ordering
-- concurrent update resolution
+- peer_id tie-breaks
 
 Commit:
+
 ```text
 [feat] crdt: implement deterministic cell merge semantics
 ```
@@ -658,27 +475,41 @@ Commit:
 ---
 
 ### 2.4 Tombstone Semantics
+
 Implement:
 - delete-wins visibility
-- preserved tombstones
+- preserved tombstone state
 
 Commit:
+
 ```text
-[feat] crdt: implement tombstone delete semantics
+[feat] crdt: implement tombstone semantics
 ```
 
 ---
 
 ### 2.5 Uniqueness Claims
+
 Implement:
 - reservation protocol
+- deterministic conflict resolution
 - conflict metadata
-- deterministic winners
 
 Commit:
+
 ```text
 [feat] crdt: implement uniqueness claim protocol
 ```
+
+---
+
+## Required Tests
+
+- merge associativity
+- merge commutativity
+- merge idempotency
+- deterministic tie-break validation
+- uniqueness convergence tests
 
 ---
 
@@ -690,14 +521,28 @@ Commit:
 feature/storage-engine
 ```
 
-## Tasks
+---
+
+## Goals
+
+Implement:
+- canonical persistence
+- metadata persistence
+- deterministic serialization
+- recovery semantics
+
+---
+
+## Sub-Tasks
 
 ### 3.1 Canonical Row Storage
+
 Implement:
 - row persistence
-- deterministic layout
+- stable row ordering
 
 Commit:
+
 ```text
 [feat] storage: implement canonical row persistence
 ```
@@ -705,23 +550,27 @@ Commit:
 ---
 
 ### 3.2 Metadata Persistence
+
 Implement:
 - frontier persistence
 - tombstone persistence
 - uniqueness metadata persistence
 
 Commit:
+
 ```text
-[feat] storage: persist replication metadata
+[feat] storage: persist synchronization metadata
 ```
 
 ---
 
-### 3.3 Deterministic Serialization
+### 3.3 Canonical Serialization
+
 Implement:
-- canonical CBOR serialization
+- deterministic CBOR serialization
 
 Commit:
+
 ```text
 [feat] storage: implement canonical serialization
 ```
@@ -729,14 +578,24 @@ Commit:
 ---
 
 ### 3.4 Recovery Semantics
+
 Implement:
 - startup recovery
 - corruption handling
 
 Commit:
+
 ```text
 [feat] storage: implement recovery semantics
 ```
+
+---
+
+## Required Tests
+
+- deterministic serialization tests
+- persistence roundtrip tests
+- recovery correctness tests
 
 ---
 
@@ -748,13 +607,27 @@ Commit:
 feature/sync-engine
 ```
 
-## Tasks
+---
+
+## Goals
+
+Implement:
+- anti-entropy synchronization
+- frontier comparison
+- delta extraction
+- replay-safe reconciliation
+
+---
+
+## Sub-Tasks
 
 ### 4.1 Frontier Comparison
+
 Implement:
 - missing delta detection
 
 Commit:
+
 ```text
 [feat] sync: implement frontier comparison
 ```
@@ -762,10 +635,13 @@ Commit:
 ---
 
 ### 4.2 Delta Extraction
+
 Implement:
 - changed-row extraction
+- delta payload generation
 
 Commit:
+
 ```text
 [feat] sync: implement delta extraction
 ```
@@ -773,36 +649,55 @@ Commit:
 ---
 
 ### 4.3 Sync Sessions
+
 Implement:
 - handshake protocol
 - frontier exchange
+- replay-safe synchronization
 
 Commit:
+
 ```text
 [feat] sync: implement sync session protocol
 ```
 
 ---
 
-### 4.4 Merge Application
+### 4.4 Merge Reconciliation
+
 Implement:
 - deterministic reconciliation
+- replay-safe merge application
 
 Commit:
+
 ```text
-[feat] sync: implement deterministic merge reconciliation
+[feat] sync: implement deterministic reconciliation
 ```
 
 ---
 
 ### 4.5 Snapshot Hash Validation
+
 Implement:
 - convergence verification
+- deterministic snapshot hashing
 
 Commit:
+
 ```text
-[feat] hashing: implement snapshot convergence validation
+[feat] hashing: implement deterministic convergence hashing
 ```
+
+---
+
+## Required Tests
+
+- delayed synchronization
+- duplicate synchronization
+- randomized sync ordering
+- replay safety
+- convergence validation
 
 ---
 
@@ -814,13 +709,27 @@ Commit:
 feature/index-engine
 ```
 
-## Tasks
+---
 
-### 5.1 Index Structures
+## Goals
+
 Implement:
 - deterministic indexes
+- derived index maintenance
+- deterministic range queries
+
+---
+
+## Sub-Tasks
+
+### 5.1 Index Structures
+
+Implement:
+- ordered indexes
+- canonical traversal
 
 Commit:
+
 ```text
 [feat] index: implement deterministic index structures
 ```
@@ -828,24 +737,36 @@ Commit:
 ---
 
 ### 5.2 Incremental Updates
+
 Implement:
 - index rebuild/update logic
 
 Commit:
+
 ```text
-[feat] index: implement incremental index updates
+[feat] index: implement incremental index maintenance
 ```
 
 ---
 
 ### 5.3 Range Queries
+
 Implement:
 - deterministic scans
 
 Commit:
+
 ```text
 [feat] index: implement deterministic range scans
 ```
+
+---
+
+## Required Tests
+
+- deterministic ordering tests
+- index convergence tests
+- replay-safe index rebuild tests
 
 ---
 
@@ -857,13 +778,26 @@ Commit:
 feature/sql-engine
 ```
 
-## Tasks
+---
+
+## Goals
+
+Implement:
+- SQL parsing
+- deterministic query execution
+- local relational semantics
+
+---
+
+## Sub-Tasks
 
 ### 6.1 SQL Parser Integration
+
 Implement:
 - sqlparser-rs integration
 
 Commit:
+
 ```text
 [feat] sql: integrate sqlparser-rs
 ```
@@ -871,13 +805,15 @@ Commit:
 ---
 
 ### 6.2 Schema Engine
+
 Implement:
 - CREATE TABLE
 - CREATE INDEX
 - UNIQUE
-- FK
+- FOREIGN KEY
 
 Commit:
+
 ```text
 [feat] sql: implement schema engine
 ```
@@ -885,6 +821,7 @@ Commit:
 ---
 
 ### 6.3 Query Execution
+
 Implement:
 - SELECT
 - WHERE
@@ -892,6 +829,7 @@ Implement:
 - LIMIT
 
 Commit:
+
 ```text
 [feat] sql: implement deterministic query execution
 ```
@@ -899,15 +837,26 @@ Commit:
 ---
 
 ### 6.4 Write Execution
+
 Implement:
 - INSERT
 - UPDATE
 - DELETE
 
 Commit:
+
 ```text
-[feat] sql: implement write execution layer
+[feat] sql: implement write execution
 ```
+
+---
+
+## Required Tests
+
+- deterministic query results
+- schema correctness
+- FK behavior
+- uniqueness behavior
 
 ---
 
@@ -919,15 +868,28 @@ Commit:
 feature/transaction-engine
 ```
 
-## Tasks
+---
+
+## Goals
+
+Implement:
+- local transactions
+- row-level atomicity
+- rollback handling
+
+---
+
+## Sub-Tasks
 
 ### 7.1 Transaction Context
+
 Implement:
 - begin
 - commit
 - rollback
 
 Commit:
+
 ```text
 [feat] txn: implement transaction context
 ```
@@ -935,10 +897,12 @@ Commit:
 ---
 
 ### 7.2 Atomic Local Writes
+
 Implement:
-- row-level atomicity
+- atomic row persistence
 
 Commit:
+
 ```text
 [feat] txn: implement atomic local writes
 ```
@@ -946,13 +910,23 @@ Commit:
 ---
 
 ### 7.3 Recovery Safety
+
 Implement:
-- crash-safe local transaction recovery
+- crash-safe recovery semantics
 
 Commit:
+
 ```text
-[feat] txn: implement transaction recovery semantics
+[feat] txn: implement recovery semantics
 ```
+
+---
+
+## Required Tests
+
+- rollback correctness
+- crash recovery validation
+- partial write handling
 
 ---
 
@@ -964,13 +938,26 @@ Commit:
 feature/tombstone-gc
 ```
 
-## Tasks
+---
 
-### 8.1 Frontier Stability
+## Goals
+
 Implement:
 - causal stability checks
+- tombstone cleanup
+- metadata compaction
+
+---
+
+## Sub-Tasks
+
+### 8.1 Stability Tracking
+
+Implement:
+- frontier stabilization
 
 Commit:
+
 ```text
 [feat] gc: implement causal stability tracking
 ```
@@ -978,10 +965,12 @@ Commit:
 ---
 
 ### 8.2 Tombstone Reclamation
+
 Implement:
-- safe tombstone cleanup
+- safe tombstone deletion
 
 Commit:
+
 ```text
 [feat] gc: implement tombstone reclamation
 ```
@@ -989,13 +978,23 @@ Commit:
 ---
 
 ### 8.3 Metadata Compaction
+
 Implement:
 - obsolete metadata cleanup
 
 Commit:
+
 ```text
 [feat] gc: implement metadata compaction
 ```
+
+---
+
+## Required Tests
+
+- no resurrection validation
+- delayed sync safety
+- replay safety after GC
 
 ---
 
@@ -1007,38 +1006,63 @@ Commit:
 feature/wasm-runtime
 ```
 
-## Tasks
+---
+
+## Goals
+
+Implement:
+- WASM compilation
+- browser runtime
+- local browser persistence
+
+---
+
+## Sub-Tasks
 
 ### 9.1 WASM Bindings
+
 Implement:
 - wasm-bindgen integration
 
 Commit:
+
 ```text
 [feat] wasm: implement wasm bindings
 ```
 
 ---
 
-### 9.2 Browser Storage
+### 9.2 Browser Persistence
+
 Implement:
-- IndexedDB/local persistence
+- IndexedDB/local storage layer
 
 Commit:
+
 ```text
-[feat] wasm: implement browser persistence layer
+[feat] wasm: implement browser persistence
 ```
 
 ---
 
-### 9.3 JS Interop
+### 9.3 JavaScript APIs
+
 Implement:
-- JS-facing APIs
+- JS interop APIs
 
 Commit:
+
 ```text
-[feat] wasm: implement JavaScript interop APIs
+[feat] wasm: implement JavaScript APIs
 ```
+
+---
+
+## Required Tests
+
+- browser execution
+- deterministic WASM behavior
+- persistence recovery
 
 ---
 
@@ -1050,42 +1074,142 @@ Commit:
 feature/networking
 ```
 
-## Tasks
+---
 
-### 10.1 Transport Abstraction
+## Goals
+
 Implement:
-- transport interfaces
+- transport abstraction
+- peer communication
+- sync transport protocol
+
+---
+
+## Sub-Tasks
+
+### 10.1 Transport Interfaces
+
+Implement:
+- websocket/WebRTC abstraction
 
 Commit:
+
 ```text
 [feat] network: implement transport abstraction
 ```
 
 ---
 
-### 10.2 Sync Protocol
+### 10.2 Sync Payload Transport
+
 Implement:
-- sync payload transport
+- sync transport protocol
 
 Commit:
+
 ```text
-[feat] network: implement sync transport protocol
+[feat] network: implement sync transport
 ```
 
 ---
 
 ### 10.3 Peer Sessions
+
 Implement:
-- peer communication lifecycle
+- peer lifecycle management
 
 Commit:
+
 ```text
 [feat] network: implement peer session handling
 ```
 
 ---
 
-# PHASE 11 — Benchmark Suite
+## Required Tests
+
+- delayed transport
+- duplicate transport replay
+- partial synchronization recovery
+
+---
+
+# PHASE 11 — Python Adapter Integration
+
+## Branch
+
+```bash
+feature/python-adapter
+```
+
+---
+
+## Goals
+
+Implement:
+- benchmark-compatible adapter
+- deterministic snapshot bridge
+- Rust ↔ Python integration
+
+---
+
+## Sub-Tasks
+
+### 11.1 Adapter Interface
+
+Implement:
+- open_peer()
+- apply_schema()
+- execute()
+- sync()
+- snapshot_hash()
+- snapshot_state()
+- close()
+
+Commit:
+
+```text
+[feat] adapter: implement benchmark adapter interface
+```
+
+---
+
+### 11.2 Rust Bridge
+
+Implement:
+- pyo3 bridge OR subprocess bridge
+
+Commit:
+
+```text
+[feat] adapter: implement Rust bridge layer
+```
+
+---
+
+### 11.3 Harness Validation
+
+Implement:
+- self_check.py compatibility
+- run.py compatibility
+
+Commit:
+
+```text
+[test] adapter: validate benchmark harness compatibility
+```
+
+---
+
+## Required Tests
+
+- deterministic snapshot validation
+- replay-safe sync validation
+- harness compatibility tests
+
+---
+
+# PHASE 12 — Benchmark & Validation Suite
 
 ## Branch
 
@@ -1093,55 +1217,74 @@ Commit:
 feature/benchmark-suite
 ```
 
-## Tasks
+---
 
-### 11.1 Randomized Sync Simulation
+## Goals
+
 Implement:
-- randomized sync replay testing
+- randomized convergence testing
+- partition simulation
+- deterministic replay validation
+
+---
+
+## Sub-Tasks
+
+### 12.1 Randomized Sync Simulation
+
+Implement:
+- random sync replay engine
 
 Commit:
+
 ```text
 [test] benchmark: implement randomized sync simulation
 ```
 
 ---
 
-### 11.2 Partition Simulation
+### 12.2 Partition Simulation
+
 Implement:
-- network partition testing
+- partition recovery tests
 
 Commit:
+
 ```text
-[test] benchmark: implement partition simulation tests
+[test] benchmark: implement partition simulation
 ```
 
 ---
 
-### 11.3 Snapshot Validation
+### 12.3 Snapshot Validation
+
 Implement:
 - deterministic convergence verification
 
 Commit:
+
 ```text
-[test] benchmark: implement convergence hash validation
+[test] benchmark: implement snapshot convergence validation
 ```
 
 ---
 
-### 11.4 Metrics
+### 12.4 Metrics
+
 Implement:
 - metadata metrics
 - sync metrics
 - convergence metrics
 
 Commit:
+
 ```text
 [feat] benchmark: implement benchmark metrics
 ```
 
 ---
 
-# PHASE 12 — Release Stabilization
+# PHASE 13 — Release Stabilization
 
 ## Branch
 
@@ -1149,99 +1292,78 @@ Commit:
 feature/release-stabilization
 ```
 
-## Tasks
+---
 
-### 12.1 Final README
+## Goals
+
 Finalize:
+- documentation
 - examples
-- usage
-- architecture diagrams
+- release validation
+- deployment instructions
+
+---
+
+## Sub-Tasks
+
+### 13.1 Final README
 
 Commit:
+
 ```text
 [docs] release: finalize README
 ```
 
 ---
 
-### 12.2 Architecture Docs
-Finalize:
-- internal protocol docs
-- sync semantics
-- invariants
+### 13.2 Architecture Documentation
 
 Commit:
+
 ```text
 [docs] release: finalize architecture documentation
 ```
 
 ---
 
-### 12.3 Examples
-Add:
-- sync demos
-- convergence examples
-- partition examples
+### 13.3 Example Workflows
 
 Commit:
+
 ```text
-[docs] release: add example workflows
+[docs] release: add workflow examples
 ```
 
 ---
 
-### 12.4 Release Validation
-Finalize:
-- full convergence testing
-- CI stabilization
+### 13.4 Release Validation
 
 Commit:
+
 ```text
 [test] release: finalize validation suite
 ```
 
 ---
 
-# REQUIRED TESTING STRATEGY
+# 10. Final Engineering Requirements
 
-Every feature MUST include:
+At the end of EVERY sub-phase:
 
-## Unit Tests
-- merge semantics
-- Lamport logic
-- tombstones
-- serialization
-- hashing
+The coding agent MUST:
+1. ensure compilation succeeds
+2. ensure tests pass
+3. update README.md
+4. update CHANGES.md
+5. update IMPLEMENTATION.md
+6. document unfinished work
+7. document known limitations
+8. create isolated commit
+9. maintain deterministic behavior
 
-## Integration Tests
-- sync replay
-- delayed sync
-- duplicate sync
-- partition recovery
-
-## Property Tests
-- associativity
-- commutativity
-- idempotency
-
-## Determinism Tests
-- identical hashes
-- identical indexes
-- deterministic serialization
-
----
-
-# REQUIRED FINAL OUTPUT
-
-The final system MUST provide:
-
-- deterministic CRDT relational database
-- local-first execution
-- offline-first replication
-- pairwise anti-entropy synchronization
-- deterministic convergence
-- bounded metadata
-- reproducible snapshot hashing
-- Rust + WASM runtime
-- deterministic relational queries
-- benchmark-ready convergence proofs
+The repository MUST always remain:
+- buildable
+- testable
+- replay-safe
+- resumable by another agent
+- deterministically reproducible
