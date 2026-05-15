@@ -12,16 +12,32 @@ Anvil is a multi-writer embedded OLTP engine with a SQLite-like SQL surface and 
 
 **Prerequisites:** Rust 1.95+, Python 3.10+
 
+### Linux / macOS
+
 ```bash
 git clone https://github.com/vimalyad/udaan-relational-database
 cd udaan-relational-database
 
 # Build the engine binary
-cargo build --release -p adapter
+cargo build --release
 
-# Run the benchmark self-check (all axes must pass)
+# Run the benchmark self-check
 cd bench-harness/bench-p01-crdt
 python3 self_check.py --adapter adapters.anvil:Engine --fk-policy tombstone
+```
+
+### Windows
+
+```bat
+git clone https://github.com/vimalyad/udaan-relational-database
+cd udaan-relational-database
+
+:: Build the engine binary
+cargo build --release
+
+:: Run the benchmark self-check
+cd bench-harness\bench-p01-crdt
+python self_check.py --adapter adapters.anvil:Engine --fk-policy tombstone
 ```
 
 Expected output:
@@ -52,9 +68,11 @@ docker run --rm anvil
 | `CREATE TABLE / INDEX` | Full DDL with PK, UNIQUE, NOT NULL, DEFAULT, REFERENCES |
 | `INSERT / UPDATE / DELETE` | Cell-level CRDT writes with Lamport versioning |
 | `SELECT … WHERE … ORDER BY … LIMIT` | Operates on deterministically merged local replica |
+| Arithmetic in UPDATE | `SET score = score + 5` and `+`, `-`, `*`, `/`, `%` supported |
+| NULL semantics | SQL-correct: `NULL = NULL` is UNKNOWN; `IS NULL` / `IS NOT NULL` work as expected |
 | Concurrent writes, no coordinator | Peers write offline; sync at any time in any order |
-| Uniqueness under partition | Reservation/claim protocol — loser preserved, not dropped |
-| Foreign keys under partition | Tombstone policy — child survives parent deletion |
+| Uniqueness under partition | Reservation/claim protocol — loser preserved and hidden at query time |
+| Foreign keys under partition | Tombstone policy — child survives parent deletion; FK deferred to merge time |
 | Convergence verification | BLAKE3 snapshot hash — order-invariant, version-independent |
 
 ---
@@ -82,6 +100,8 @@ docker run --rm anvil
 └─────────────────────────────────────────────────────────┘
 ```
 
+The Python adapter spawns the `anvil` binary as a **subprocess** and communicates via JSON lines over stdin/stdout — no ports, no sockets. All peers live in-memory inside the single Rust process; `sync(A, B)` moves delta rows between two in-memory replicas.
+
 ### Key Design Decisions
 
 | Decision | Choice | Reason |
@@ -90,8 +110,39 @@ docker run --rm anvil
 | Clock | Lamport scalar `(counter, peer_id)` | O(1) per cell; O(writers) total — bounded metadata |
 | Delete semantics | Delete-wins tombstone | Prevents zombie row resurrection after partition |
 | Uniqueness | Reservation/claim protocol | Pure CRDTs cannot enforce uniqueness; 2PC blocks under partition |
-| Foreign keys | Tombstone policy | Child survives parent deletion; most information-preserving |
+| FK enforcement | Eventually-consistent (deferred) | Enforcing FK at write time breaks partition tolerance — referenced row may only exist on an unsynced peer |
 | Hash | BLAKE3 over semantic content only | Excluding clock metadata makes hash order-invariant |
+| Multi-row INSERT | Validation pass before write pass | All rows validated atomically; any failure rolls back the entire statement |
+
+---
+
+## Demo Scripts
+
+Simulates a 4-peer distributed setup where each peer writes data offline before syncing.
+
+### Linux / macOS
+
+```bash
+cargo build --release
+python3 scripts/peer_a.py     # Peer A writes users + orders
+python3 scripts/peer_b.py     # Peer B writes users + orders (FK cross-peer)
+python3 scripts/peer_c.py     # Peer C demonstrates tombstone
+python3 scripts/peer_d.py     # Peer D demonstrates LWW conflict
+python3 scripts/sync_demo.py  # Simulates ring sync + convergence verification
+```
+
+### Windows
+
+```bat
+cargo build --release
+python scripts\peer_a.py
+python scripts\peer_b.py
+python scripts\peer_c.py
+python scripts\peer_d.py
+python scripts\sync_demo.py
+```
+
+Each peer script writes a `peer_X_state.json` snapshot. `sync_demo.py` runs all four peers, syncs them in a ring, and verifies all hashes converge.
 
 ---
 
@@ -112,24 +163,38 @@ docker run --rm anvil
 | `query` | Query result types, SELECT/WHERE/ORDER BY/LIMIT |
 | `network` | Transport abstraction layer |
 | `wasm-runtime` | WASM/wasm-bindgen bindings |
-| `adapter` | `anvil` subprocess binary — JSON-RPC bridge |
+| `adapter` | `anvil` subprocess binary — JSON-RPC bridge (cross-platform) |
 | `benchmark` | Validation suite: randomized sync, partition simulation, convergence |
 
 ---
 
 ## Running Tests
 
+### Linux / macOS
+
 ```bash
 # Library unit tests (all crates)
 cargo test --lib --all
 
-# Benchmark integration tests (randomized sync, partition, convergence)
+# Benchmark integration tests
 cargo test -p benchmark
 
-# Full benchmark with custom seeds (stress test)
+# Full benchmark with custom seeds
 cd bench-harness/bench-p01-crdt
 python3 run.py --adapter adapters.anvil:Engine --fk-policy tombstone \
   --randomized-seeds 9999 31415 27182 16180 11235 \
+  --rand-peers 5 --rand-ops 150 --out report.json
+```
+
+### Windows
+
+```bat
+cargo test --lib --all
+cargo test -p benchmark
+
+cd bench-harness\bench-p01-crdt
+python run.py --adapter adapters.anvil:Engine --fk-policy tombstone ^
+  --randomized-seeds 9999 31415 27182 16180 11235 ^
   --rand-peers 5 --rand-ops 150 --out report.json
 ```
 
