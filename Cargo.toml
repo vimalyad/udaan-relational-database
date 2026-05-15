@@ -15,6 +15,7 @@ members = [
     "crates/network",
     "crates/adapter",
     "crates/wasm-runtime",
+    "crates/benchmark",
 ]
 resolver = "2"
 
