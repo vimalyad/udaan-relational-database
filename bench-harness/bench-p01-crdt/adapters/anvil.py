@@ -21,9 +21,10 @@ def _find_binary():
     """Find the anvil binary relative to the repo root."""
     # bench-harness/bench-p01-crdt/adapters/ -> ../../.. -> repo root
     repo_root = Path(__file__).parent.parent.parent.parent
+    binary_name = "anvil.exe" if os.name == "nt" else "anvil"
     candidates = [
-        repo_root / "target" / "release" / "anvil",
-        repo_root / "target" / "debug" / "anvil",
+        repo_root / "target" / "release" / binary_name,
+        repo_root / "target" / "debug" / binary_name,
     ]
     for p in candidates:
         if p.exists():
