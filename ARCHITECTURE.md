@@ -274,20 +274,18 @@ Anvil implements a SQL executor over the CRDT storage engine using `sqlparser-rs
 
 ### FK Tombstone Policy
 
+FK constraints are **eventually-consistent** — not enforced at write time. Enforcing FK at INSERT/UPDATE time would reject writes that reference rows existing only on an unsynced peer, breaking partition tolerance. FK is a soft constraint: the child row is always written; referential integrity converges after sync.
+
 ```
-Parent deleted on peer C    Child inserted on peer A
-        │                           │
-        ▼                           ▼
-  parent row:                 FK check passes because
-  deleted=true                storage.get_row() returns
-  (tombstone)                 Some for tombstoned rows
-        │                           │
-        └─────── sync ──────────────┘
-                    │
-                    ▼
-           Both rows visible:
-           - parent: tombstoned (hidden from queries)
-           - child:  alive, user_id = parent's id
+Peer A (offline):   INSERT INTO orders (id, user_id) VALUES ('o1', 'u1')
+                    → succeeds even if u1 not yet seen locally
+
+Peer C (offline):   DELETE FROM users WHERE id = 'u1'
+                    → u1 tombstoned
+
+After sync:
+  users.u1  → tombstoned (hidden from queries)
+  orders.o1 → alive, user_id = 'u1'
 ```
 
 One policy, applied uniformly. Cascade and orphan require coordination or information loss under partition; tombstone preserves maximum information.

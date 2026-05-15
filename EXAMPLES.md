@@ -3,7 +3,11 @@
 All examples use the Python adapter (`adapter/adapter.py`). Build the binary first:
 
 ```bash
-cargo build --release -p adapter
+# Linux / macOS
+cargo build --release
+
+# Windows
+cargo build --release
 ```
 
 ---
@@ -259,7 +263,7 @@ print("Order o1 alive; user u1 tombstoned. Referential traceability preserved.")
 e.close()
 ```
 
-**What happens internally:** `storage.get_row()` returns `Some` for tombstoned rows, so FK validation at insert time passes. After sync, the parent is tombstoned but the child is alive. This is the most information-preserving choice — the application can query both `snapshot_state` and tombstones to surface the broken reference.
+**What happens internally:** FK constraints are eventually-consistent — not enforced at write time. This preserves partition tolerance: the child row is written locally even if the parent doesn't exist on that peer yet. After sync, the parent is tombstoned but the child is alive. The application can query both `snapshot_state` and tombstones to surface the broken reference.
 
 ---
 
@@ -298,20 +302,12 @@ The same result holds for any permutation of sync order — `A↔C` first, then 
 
 ## Example 8: Running the Full Benchmark
 
+### Linux / macOS
+
 ```bash
 # Quick self-check (all six axes, weighted score)
 cd bench-harness/bench-p01-crdt
 python3 self_check.py --adapter adapters.anvil:Engine --fk-policy tombstone
-
-# Expected output:
-#   AXIS                          PASS    WEIGHT
-#   convergence                     PASS    0.30
-#   uniqueness:users.email          PASS    0.20
-#   fk                              PASS    0.15
-#   cell-level:u1                   PASS    0.10
-#   order-invariance                PASS    0.10
-#   randomized                      PASS    0.15
-#   WEIGHTED SCORE                1.00  / 1.00
 
 # Stress test with custom seeds
 python3 run.py --adapter adapters.anvil:Engine --fk-policy tombstone \
@@ -321,4 +317,30 @@ python3 run.py --adapter adapters.anvil:Engine --fk-policy tombstone \
 # Unit + integration tests
 cargo test --lib --all
 cargo test -p benchmark
+```
+
+### Windows
+
+```bat
+cd bench-harness\bench-p01-crdt
+python self_check.py --adapter adapters.anvil:Engine --fk-policy tombstone
+
+python run.py --adapter adapters.anvil:Engine --fk-policy tombstone ^
+  --randomized-seeds 9999 31415 27182 16180 11235 ^
+  --rand-peers 5 --rand-ops 150 --out report.json
+
+cargo test --lib --all
+cargo test -p benchmark
+```
+
+Expected output (both platforms):
+```
+  AXIS                          PASS    WEIGHT
+  convergence                     PASS    0.30
+  uniqueness:users.email          PASS    0.20
+  fk                              PASS    0.15
+  cell-level:u1                   PASS    0.10
+  order-invariance                PASS    0.10
+  randomized                      PASS    0.15
+  WEIGHTED SCORE                1.00  / 1.00
 ```

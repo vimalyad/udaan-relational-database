@@ -1,1 +1,4 @@
 /target/
+/scripts/adversarial.py
+/scripts/edge_cases.py
+/scripts/verify.py

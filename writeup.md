@@ -75,20 +75,21 @@ Claims are versioned by Lamport clock and propagated during sync as part of `Syn
 
 When a parent row is deleted, it becomes a tombstone — `deleted=true`, physically retained. Child rows referencing the tombstoned parent continue to exist and remain visible in queries. Their FK column still holds the original parent ID.
 
-**At insert time:** FK validation checks `storage.get_row(ref_table, ref_id).is_some()`. This returns `Some` for both live and tombstoned rows. A child can be inserted against a tombstoned parent (and vice versa after partition rejoins).
+**FK is eventually-consistent — not enforced at write time.** Enforcing FK at INSERT/UPDATE time would reject writes that reference rows existing only on an unsynced peer, directly breaking partition tolerance. A child row is always written locally; referential integrity converges after sync.
 
 **Partition scenario:**
 
 ```
 Peer C (offline):  DELETE FROM users WHERE id = 'u1'
 Peer A (offline):  INSERT INTO orders (id, user_id, ...) VALUES ('o1', 'u1', ...)
+                   → succeeds even though u1 may not exist on A yet
 
 After sync:
   users.u1  → tombstoned (hidden from SELECT)
   orders.o1 → alive, user_id = 'u1'
 ```
 
-The order is preserved. The application can query `snapshot_state` and compare against tombstones to detect and handle broken references.
+The child row is preserved. The application can query `snapshot_state` and compare against tombstones to detect and handle broken references.
 
 **Why tombstone, not cascade or orphan?**
 
