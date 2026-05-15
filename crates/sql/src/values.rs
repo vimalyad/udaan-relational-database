@@ -59,9 +59,27 @@ pub fn eval_literal(expr: &Expr, params: &[Value]) -> CrdtResult<Value> {
 pub fn eval_predicate(expr: &Expr, row: &core::types::Row, params: &[Value]) -> CrdtResult<bool> {
     match expr {
         Expr::BinaryOp { left, op, right } => {
+            use ast::BinaryOperator::*;
+            // AND / OR short-circuit before evaluating operands as values
+            match op {
+                And => {
+                    return Ok(
+                        eval_predicate(left, row, params)? && eval_predicate(right, row, params)?
+                    );
+                }
+                Or => {
+                    return Ok(
+                        eval_predicate(left, row, params)? || eval_predicate(right, row, params)?
+                    );
+                }
+                _ => {}
+            }
             let lv = eval_row_expr(left, row, params)?;
             let rv = eval_row_expr(right, row, params)?;
-            use ast::BinaryOperator::*;
+            // SQL NULL semantics: any comparison involving NULL is UNKNOWN (false).
+            if lv == Value::Null || rv == Value::Null {
+                return Ok(false);
+            }
             Ok(match op {
                 Eq => lv == rv,
                 NotEq => lv != rv,
@@ -69,16 +87,6 @@ pub fn eval_predicate(expr: &Expr, row: &core::types::Row, params: &[Value]) -> 
                 LtEq => lv <= rv,
                 Gt => lv > rv,
                 GtEq => lv >= rv,
-                And => {
-                    let lb = eval_predicate(left, row, params)?;
-                    let rb = eval_predicate(right, row, params)?;
-                    lb && rb
-                }
-                Or => {
-                    let lb = eval_predicate(left, row, params)?;
-                    let rb = eval_predicate(right, row, params)?;
-                    lb || rb
-                }
                 _ => return Err(CrdtError::ParseError(format!("unsupported op: {op}"))),
             })
         }
@@ -100,7 +108,7 @@ pub fn eval_predicate(expr: &Expr, row: &core::types::Row, params: &[Value]) -> 
 }
 
 #[allow(clippy::only_used_in_recursion)]
-fn eval_row_expr(expr: &Expr, row: &core::types::Row, params: &[Value]) -> CrdtResult<Value> {
+pub fn eval_row_expr(expr: &Expr, row: &core::types::Row, params: &[Value]) -> CrdtResult<Value> {
     match expr {
         Expr::Identifier(ident) => {
             let col = &ident.value;
@@ -140,6 +148,42 @@ fn eval_row_expr(expr: &Expr, row: &core::types::Row, params: &[Value]) -> CrdtR
             let rv = eval_row_expr(right, row, params)?;
             use ast::BinaryOperator::*;
             match op {
+                // Arithmetic
+                Plus => match (lv, rv) {
+                    (Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(a + b)),
+                    (Value::Text(a), Value::Text(b)) => Ok(Value::Text(a + &b)),
+                    _ => Err(CrdtError::ParseError(
+                        "'+' requires integer or text operands".to_string(),
+                    )),
+                },
+                Minus => match (lv, rv) {
+                    (Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(a - b)),
+                    _ => Err(CrdtError::ParseError(
+                        "'-' requires integer operands".to_string(),
+                    )),
+                },
+                Multiply => match (lv, rv) {
+                    (Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(a * b)),
+                    _ => Err(CrdtError::ParseError(
+                        "'*' requires integer operands".to_string(),
+                    )),
+                },
+                Divide => match (lv, rv) {
+                    (Value::Integer(a), Value::Integer(b)) if b != 0 => Ok(Value::Integer(a / b)),
+                    (Value::Integer(_), Value::Integer(0)) => {
+                        Err(CrdtError::ParseError("division by zero".to_string()))
+                    }
+                    _ => Err(CrdtError::ParseError(
+                        "'/' requires integer operands".to_string(),
+                    )),
+                },
+                Modulo => match (lv, rv) {
+                    (Value::Integer(a), Value::Integer(b)) if b != 0 => Ok(Value::Integer(a % b)),
+                    _ => Err(CrdtError::ParseError(
+                        "'%' requires non-zero integer operands".to_string(),
+                    )),
+                },
+                // Comparisons (return 0/1 when used as values, not predicates)
                 Eq => Ok(Value::Integer(if lv == rv { 1 } else { 0 })),
                 NotEq => Ok(Value::Integer(if lv != rv { 1 } else { 0 })),
                 Lt => Ok(Value::Integer(if lv < rv { 1 } else { 0 })),

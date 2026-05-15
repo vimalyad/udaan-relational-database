@@ -3,7 +3,7 @@
 //! Reads operate on the local materialized replica only (no coordination).
 
 use crate::schema::{object_name_to_string, parse_create_index, parse_create_table};
-use crate::values::{eval_literal, eval_predicate};
+use crate::values::{eval_literal, eval_predicate, eval_row_expr};
 use core::error::{CrdtError, CrdtResult};
 use core::types::{Cell, Row, RowId, TableId, Value};
 use index::IndexManager;
@@ -100,7 +100,6 @@ impl SqlExecutor {
         insert: &ast::Insert,
         params: &[Value],
     ) -> CrdtResult<QueryResult> {
-        // Extract table name from TableObject
         let table_name = match &insert.table {
             TableObject::TableName(name) => object_name_to_string(name),
             _ => {
@@ -136,6 +135,11 @@ impl SqlExecutor {
             }
         };
 
+        // ── VALIDATION PASS (no writes, no clock ticks) ────────────────────
+        // All rows are validated before any row is written (atomicity: if any
+        // row fails, none are committed).
+        let mut validated: Vec<(RowId, BTreeMap<String, Value>)> = Vec::new();
+
         for row_vals in rows_to_insert {
             let mut cells: BTreeMap<String, Value> = BTreeMap::new();
 
@@ -153,6 +157,19 @@ impl SqlExecutor {
                 }
             }
 
+            // NOT NULL checks (covers both explicit NULL and missing column)
+            for col in &schema.columns {
+                if !col.nullable {
+                    match cells.get(&col.name) {
+                        None => return Err(CrdtError::NotNullViolation(col.name.clone())),
+                        Some(Value::Null) => {
+                            return Err(CrdtError::NotNullViolation(col.name.clone()))
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
             // Extract primary key → row ID
             let pk_col = schema
                 .primary_key_column()
@@ -163,7 +180,16 @@ impl SqlExecutor {
                 .clone();
             let row_id = pk_val.to_string();
 
-            // FK check (tombstone policy: tombstoned parents count as existing)
+            // Duplicate PK check (reject if a visible, non-deleted row already exists)
+            if replica
+                .storage
+                .get_visible_row(&table_name, &row_id)
+                .is_some()
+            {
+                return Err(CrdtError::PrimaryKeyViolation(row_id, table_name.clone()));
+            }
+
+            // FK checks (tombstone policy: tombstoned parents count as existing)
             for fk in &schema.foreign_keys {
                 if let Some(fk_val) = cells.get(&fk.column) {
                     if *fk_val != Value::Null {
@@ -178,6 +204,14 @@ impl SqlExecutor {
                 }
             }
 
+            // Uniqueness violations are resolved by the CRDT claim protocol at merge/query
+            // time — no immediate rejection here (partition-tolerant design).
+
+            validated.push((row_id, cells));
+        }
+
+        // ── WRITE PASS (all rows validated; write atomically) ───────────────
+        for (row_id, cells) in validated {
             let version = replica.clock.tick();
             core::utils::frontier_update(&mut replica.frontier, &replica.peer_id, version.counter);
 
@@ -249,17 +283,44 @@ impl SqlExecutor {
                 None => continue,
             };
 
+            // Pre-validate all assignments before ticking the clock
+            let mut new_vals: Vec<(String, Value)> = Vec::new();
+            for assign in assignments {
+                let col_name = assign.target.to_string();
+                let new_val = eval_literal(&assign.value, params)
+                    .or_else(|_| eval_row_expr(&assign.value, &old_row, params))?;
+
+                // NOT NULL check
+                if let Some(col) = schema.column(&col_name) {
+                    if !col.nullable && new_val == Value::Null {
+                        return Err(CrdtError::NotNullViolation(col_name.clone()));
+                    }
+                }
+
+                // FK check for FK column updates
+                for fk in &schema.foreign_keys {
+                    if fk.column == col_name && new_val != Value::Null {
+                        let ref_id = new_val.to_string();
+                        if replica.storage.get_row(&fk.ref_table, &ref_id).is_none() {
+                            return Err(CrdtError::ForeignKeyViolation {
+                                table: fk.ref_table.clone(),
+                                row: ref_id,
+                            });
+                        }
+                    }
+                }
+
+                // Uniqueness for UPDATE: CRDT claim protocol handles conflicts at merge/query time.
+
+                new_vals.push((col_name, new_val));
+            }
+
             let version = replica.clock.tick();
             core::utils::frontier_update(&mut replica.frontier, &replica.peer_id, version.counter);
 
             let mut updated = old_row.clone();
 
-            for assign in assignments {
-                let col_name = assign.target.to_string();
-                let new_val = eval_literal(&assign.value, params)
-                    .or_else(|_| eval_col_ref(&assign.value, &old_row))?;
-
-                // Update uniqueness claim for unique column updates
+            for (col_name, new_val) in new_vals {
                 if let Some(col) = schema.column(&col_name) {
                     if col.unique && new_val != Value::Null {
                         replica.uniqueness.claim(
@@ -271,7 +332,6 @@ impl SqlExecutor {
                         );
                     }
                 }
-
                 updated
                     .cells
                     .insert(col_name, Cell::new(new_val, version.clone()));
@@ -385,31 +445,49 @@ impl SqlExecutor {
                 .collect()
         };
 
-        let mut rows: Vec<Vec<Value>> = replica
+        // Unique columns used to filter uniqueness losers from the result set.
+        let unique_cols: Vec<String> = schema
+            .unique_columns()
+            .iter()
+            .map(|c| c.name.clone())
+            .collect();
+
+        // Collect full rows first so ORDER BY can reference any column, even
+        // ones not in the SELECT list. Also filter uniqueness losers so SELECT
+        // is consistent with snapshot_state.
+        let mut matched_rows: Vec<Row> = replica
             .storage
             .visible_rows(&table_name)
             .filter(|row| {
-                select
+                // WHERE predicate
+                if !select
                     .selection
                     .as_ref()
                     .is_none_or(|sel| eval_predicate(sel, row, params).unwrap_or(false))
+                {
+                    return false;
+                }
+                // Uniqueness loser filter: hide rows that lost the claim for a unique value
+                for col in &unique_cols {
+                    if let Some(cell) = row.cells.get(col) {
+                        let val_str = cell.value.to_string();
+                        if cell.value != Value::Null
+                            && !replica
+                                .uniqueness
+                                .is_owner(&table_name, col, &val_str, &row.id)
+                        {
+                            return false;
+                        }
+                    }
+                }
+                true
             })
-            .map(|row| {
-                output_cols
-                    .iter()
-                    .map(|col| {
-                        row.cells
-                            .get(col)
-                            .map(|c| c.value.clone())
-                            .unwrap_or(Value::Null)
-                    })
-                    .collect()
-            })
+            .cloned()
             .collect();
 
-        // ORDER BY: query.order_by is Option<OrderBy>, exprs is Vec<OrderByExpr>
+        // ORDER BY (operates on full row data before projection)
         if let Some(order_by) = &query.order_by {
-            rows.sort_by(|a, b| {
+            matched_rows.sort_by(|a, b| {
                 for order_expr in &order_by.exprs {
                     let col_name = match &order_expr.expr {
                         Expr::Identifier(id) => id.value.as_str(),
@@ -418,9 +496,16 @@ impl SqlExecutor {
                         }
                         _ => continue,
                     };
-                    let col_idx = output_cols.iter().position(|c| c == col_name).unwrap_or(0);
-                    let va = a.get(col_idx).unwrap_or(&Value::Null);
-                    let vb = b.get(col_idx).unwrap_or(&Value::Null);
+                    let va = a
+                        .cells
+                        .get(col_name)
+                        .map(|c| &c.value)
+                        .unwrap_or(&Value::Null);
+                    let vb = b
+                        .cells
+                        .get(col_name)
+                        .map(|c| &c.value)
+                        .unwrap_or(&Value::Null);
                     let cmp = va.cmp(vb);
                     let cmp = if order_expr.asc == Some(false) {
                         cmp.reverse()
@@ -439,10 +524,26 @@ impl SqlExecutor {
         if let Some(limit_expr) = &query.limit {
             if let Ok(Value::Integer(n)) = eval_literal(limit_expr, params) {
                 if n >= 0 {
-                    rows.truncate(n as usize);
+                    matched_rows.truncate(n as usize);
                 }
             }
         }
+
+        // Project output columns after ordering and limiting
+        let rows: Vec<Vec<Value>> = matched_rows
+            .iter()
+            .map(|row| {
+                output_cols
+                    .iter()
+                    .map(|col| {
+                        row.cells
+                            .get(col)
+                            .map(|c| c.value.clone())
+                            .unwrap_or(Value::Null)
+                    })
+                    .collect()
+            })
+            .collect();
 
         Ok(QueryResult::new(output_cols, rows))
     }
@@ -477,27 +578,6 @@ fn get_delete_table_name(delete: &ast::Delete) -> CrdtResult<TableId> {
                 }
             }
         }
-    }
-}
-
-fn eval_col_ref(expr: &Expr, row: &Row) -> CrdtResult<Value> {
-    match expr {
-        Expr::Identifier(id) => Ok(row
-            .cells
-            .get(&id.value)
-            .map(|c| c.value.clone())
-            .unwrap_or(Value::Null)),
-        Expr::CompoundIdentifier(parts) => {
-            let col = parts.last().map(|p| p.value.as_str()).unwrap_or("");
-            Ok(row
-                .cells
-                .get(col)
-                .map(|c| c.value.clone())
-                .unwrap_or(Value::Null))
-        }
-        _ => Err(CrdtError::ParseError(
-            "cannot evaluate expression as column ref".to_string(),
-        )),
     }
 }
 

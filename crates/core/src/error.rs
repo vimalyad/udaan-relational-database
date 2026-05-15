@@ -21,6 +21,12 @@ pub enum CrdtError {
     #[error("foreign key violation: referenced row {row} in table {table} does not exist")]
     ForeignKeyViolation { table: String, row: String },
 
+    #[error("primary key violation: row '{0}' already exists in table '{1}'")]
+    PrimaryKeyViolation(String, String),
+
+    #[error("not null violation: column '{0}' cannot be NULL")]
+    NotNullViolation(String),
+
     #[error("schema error: {0}")]
     SchemaError(String),
 

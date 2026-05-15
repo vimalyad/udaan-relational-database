@@ -85,6 +85,17 @@ impl UniquenessRegistry {
         self.claims.get(&key).map(|c| c.owner_row.as_str())
     }
 
+    /// Get the peer_id that made the winning claim (i.e. the peer that last wrote this value).
+    /// Used to distinguish local conflicts from cross-peer CRDT conflicts.
+    pub fn owner_peer(&self, table_id: &str, column_id: &str, value: &str) -> Option<&str> {
+        let key = (
+            table_id.to_string(),
+            column_id.to_string(),
+            value.to_string(),
+        );
+        self.claims.get(&key).map(|c| c.version.peer_id.as_str())
+    }
+
     /// Check if a row is the canonical owner of a unique value.
     pub fn is_owner(&self, table_id: &str, column_id: &str, value: &str, row_id: &str) -> bool {
         self.owner(table_id, column_id, value)
