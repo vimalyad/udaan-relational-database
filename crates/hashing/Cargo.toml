@@ -1,0 +1,14 @@
+[package]
+name = "hashing"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+core = { path = "../core" }
+storage = { path = "../storage" }
+serde = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+blake3 = { workspace = true }
+ciborium = { workspace = true }
+hex = { workspace = true }

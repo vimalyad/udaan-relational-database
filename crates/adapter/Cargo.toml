@@ -1,0 +1,23 @@
+[package]
+name = "adapter"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "anvil"
+path = "src/main.rs"
+
+[dependencies]
+core = { path = "../core" }
+crdt = { path = "../crdt" }
+storage = { path = "../storage" }
+replication = { path = "../replication" }
+sync = { path = "../sync" }
+sql = { path = "../sql" }
+hashing = { path = "../hashing" }
+gc = { path = "../gc" }
+hex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }

@@ -1,0 +1,14 @@
+[package]
+name = "sync"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+core = { path = "../core" }
+crdt = { path = "../crdt" }
+storage = { path = "../storage" }
+replication = { path = "../replication" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
