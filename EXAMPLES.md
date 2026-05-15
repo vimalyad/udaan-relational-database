@@ -1,4 +1,4 @@
-# Anvil Workflow Examples
+# Anvil — Workflow Examples
 
 All examples use the Python adapter (`adapter/adapter.py`). Build the binary first:
 
@@ -17,7 +17,6 @@ from adapter.adapter import Engine
 
 e = Engine()
 
-# Initialize two independent replicas
 e.open_peer("A")
 e.open_peer("B")
 
@@ -27,14 +26,13 @@ schema = [
 e.apply_schema("A", schema)
 e.apply_schema("B", schema)
 
-# Each peer inserts a different row while offline from the other
+# Each peer inserts a different row while offline
 e.execute("A", "INSERT INTO users (id, email, name) VALUES ('u1', 'alice@example.com', 'Alice')")
 e.execute("B", "INSERT INTO users (id, email, name) VALUES ('u2', 'bob@example.com', 'Bob')")
 
 # Bidirectional sync: A learns about u2, B learns about u1
 e.sync("A", "B")
 
-# Both peers now have the same two rows
 hash_a = e.snapshot_hash("A")
 hash_b = e.snapshot_hash("B")
 assert hash_a == hash_b, "peers must converge"
@@ -47,11 +45,13 @@ print(state["users"])
 e.close()
 ```
 
+**What happens internally:** Each insert stamps a Lamport clock version on every cell. During sync, `extract_delta` sends only rows whose cell versions exceed the remote peer's frontier. Both peers converge to an identical snapshot; `snapshot_hash` confirms it with a BLAKE3 digest computed over semantic content only.
+
 ---
 
-## Example 2: Concurrent Updates and LWW Resolution
+## Example 2: Cell-Level Merge — Concurrent Updates to Different Columns
 
-Two peers concurrently update the same cell. The update with the higher Lamport clock wins. After sync, both peers agree on the winning value.
+Two peers concurrently update *different* columns of the same row. Both updates survive — this is the key advantage of cell-level over row-level LWW.
 
 ```python
 from adapter.adapter import Engine
@@ -60,41 +60,81 @@ e = Engine()
 e.open_peer("A")
 e.open_peer("B")
 
-schema = ["CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL, name TEXT)"]
+schema = ["CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT, name TEXT, city TEXT)"]
 e.apply_schema("A", schema)
 e.apply_schema("B", schema)
 
-# Seed both peers with the same row via sync
-e.execute("A", "INSERT INTO users (id, email, name) VALUES ('u1', 'alice@example.com', 'Alice')")
+# Seed both peers with the same row
+e.execute("A", "INSERT INTO users (id, email, name, city) VALUES ('u1', 'alice@x.com', 'Alice', 'NYC')")
 e.sync("A", "B")
 
-# Both peers update the same column concurrently (no sync between updates)
-e.execute("A", "UPDATE users SET name = 'Alice A' WHERE id = 'u1'")
-e.execute("B", "UPDATE users SET name = 'Alice B' WHERE id = 'u1'")
+# Partition: A updates name, B updates city — different columns
+e.execute("A", "UPDATE users SET name = 'Alice Smith' WHERE id = 'u1'")
+e.execute("B", "UPDATE users SET city = 'London' WHERE id = 'u1'")
 
-# Sync resolves the conflict: higher Lamport clock wins
-# (B's clock was already advanced by the sync, so B's update has the higher counter)
+# Rejoin: both column updates survive
 e.sync("A", "B")
+
+state = e.snapshot_state("A")
+row = state["users"][0]
+assert row["name"] == "Alice Smith", "A's name update must survive"
+assert row["city"] == "London",      "B's city update must survive"
 
 hash_a = e.snapshot_hash("A")
 hash_b = e.snapshot_hash("B")
-assert hash_a == hash_b, "peers must converge after conflict resolution"
+assert hash_a == hash_b
 
-state = e.snapshot_state("A")
-winning_name = state["users"][0]["name"]
-print(f"Winning name: {winning_name}")
-# Both peers agree on the same name; the exact winner depends on clock values
+print(f"name={row['name']} city={row['city']}")
+# name=Alice Smith city=London
 
 e.close()
 ```
 
-**Key point:** cell-level LWW means only the conflicting column is resolved. If A and B had concurrently updated different columns of the same row, both updates would survive independently.
+**What happens internally:** Each column carries its own `Cell { value, version }`. Merge applies LWW per-cell, so the higher-versioned value wins for each column independently. Row-level LWW would have picked one peer's entire row, silently losing the other column update.
 
 ---
 
-## Example 3: Uniqueness Conflict — Two Peers Insert the Same Email
+## Example 3: Concurrent Conflict — Same Column, LWW Resolution
 
-Two peers insert rows with the same UNIQUE email address while partitioned. After sync, one row becomes the canonical owner of that email. The other row is preserved as a loser in the uniqueness registry but filtered from normal query results.
+Two peers update the *same* column of the same row. The higher Lamport clock wins.
+
+```python
+from adapter.adapter import Engine
+
+e = Engine()
+e.open_peer("A")
+e.open_peer("B")
+
+schema = ["CREATE TABLE users (id TEXT PRIMARY KEY, name TEXT)"]
+e.apply_schema("A", schema)
+e.apply_schema("B", schema)
+
+e.execute("A", "INSERT INTO users (id, name) VALUES ('u1', 'Alice')")
+e.sync("A", "B")
+
+# Concurrent conflicting updates
+e.execute("A", "UPDATE users SET name = 'Alice A' WHERE id = 'u1'")
+e.execute("B", "UPDATE users SET name = 'Alice B' WHERE id = 'u1'")
+
+e.sync("A", "B")
+
+hash_a = e.snapshot_hash("A")
+hash_b = e.snapshot_hash("B")
+assert hash_a == hash_b, "both peers agree on the winner"
+
+state = e.snapshot_state("A")
+winner = state["users"][0]["name"]
+print(f"Winner: {winner}")
+# Both peers see the same name — whichever had the higher Lamport counter
+
+e.close()
+```
+
+---
+
+## Example 4: Uniqueness Conflict — Two Peers Claim the Same Email
+
+Two peers insert rows with the same `UNIQUE` email while partitioned. After sync, one row becomes the owner; the other is preserved as a loser (filtered from normal queries).
 
 ```python
 from adapter.adapter import Engine
@@ -109,34 +149,33 @@ schema = [
 e.apply_schema("A", schema)
 e.apply_schema("B", schema)
 
-# Both peers insert a different row with the same email while offline
-e.execute("A", "INSERT INTO users (id, email, name) VALUES ('u1', 'shared@example.com', 'Alice')")
-e.execute("B", "INSERT INTO users (id, email, name) VALUES ('u2', 'shared@example.com', 'Bob')")
+# Both peers insert with the same email while offline
+e.execute("A", "INSERT INTO users (id, email, name) VALUES ('u1', 'shared@x.com', 'Alice')")
+e.execute("B", "INSERT INTO users (id, email, name) VALUES ('u2', 'shared@x.com', 'Bob')")
 
-# Sync: the uniqueness registry resolves the conflict
-# Higher-versioned row wins ownership; the other becomes a loser
 e.sync("A", "B")
 
 hash_a = e.snapshot_hash("A")
 hash_b = e.snapshot_hash("B")
-assert hash_a == hash_b, "peers must converge"
+assert hash_a == hash_b, "peers converge"
 
-state_a = e.snapshot_state("A")
-# Exactly one visible row for 'shared@example.com' — the loser is hidden
-visible = [r for r in state_a["users"] if r["email"] == "shared@example.com"]
-assert len(visible) == 1, "exactly one owner visible"
-print(f"Owner: {visible[0]['id']}")
+state = e.snapshot_state("A")
+owners = [r for r in state["users"] if r["email"] == "shared@x.com"]
+assert len(owners) == 1, "exactly one row visible per unique value"
+
+print(f"Owner row: {owners[0]['id']}")
+# Either 'u1' or 'u2' — whichever had the higher Lamport clock
 
 e.close()
 ```
 
-**Key point:** the losing row (`u1` or `u2`) is not deleted from internal storage; it is recorded in the `losers` list of the uniqueness claim. This allows conflict auditing and recovery if needed.
+**What happens internally:** The uniqueness registry stores `(table, column, value) → (owner_row_id, version, losers[])`. On sync, the higher-versioned claim wins. The loser row remains in storage (it is not tombstoned) but `is_owner()` returns false for it, so `snapshot_state` and `SELECT` filter it out.
 
 ---
 
-## Example 4: Delete and Sync (Tombstone Semantics)
+## Example 5: Delete-Wins Tombstone — Concurrent Delete and Update
 
-One peer deletes a row while the other peer has a concurrent update to the same row. Delete-wins semantics ensure the deletion prevails after sync.
+One peer deletes a row; the other concurrently updates it. Delete-wins semantics ensure the row stays deleted after sync.
 
 ```python
 from adapter.adapter import Engine
@@ -145,60 +184,141 @@ e = Engine()
 e.open_peer("A")
 e.open_peer("B")
 
-schema = ["CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL, name TEXT)"]
+schema = ["CREATE TABLE users (id TEXT PRIMARY KEY, name TEXT)"]
 e.apply_schema("A", schema)
 e.apply_schema("B", schema)
 
-# Seed both peers
-e.execute("A", "INSERT INTO users (id, email, name) VALUES ('u1', 'alice@example.com', 'Alice')")
+e.execute("A", "INSERT INTO users (id, name) VALUES ('u1', 'Alice')")
 e.sync("A", "B")
 
-# Partition: A deletes the row, B updates it concurrently
+# Partition: A deletes, B updates
 e.execute("A", "DELETE FROM users WHERE id = 'u1'")
 e.execute("B", "UPDATE users SET name = 'Alice Updated' WHERE id = 'u1'")
 
-# Rejoin: delete-wins means the row is tombstoned on both peers
 e.sync("A", "B")
+
+state = e.snapshot_state("A")
+visible = state.get("users", [])
+assert len(visible) == 0, "delete must win over concurrent update"
 
 hash_a = e.snapshot_hash("A")
 hash_b = e.snapshot_hash("B")
-assert hash_a == hash_b, "peers must converge"
+assert hash_a == hash_b
 
-state = e.snapshot_state("A")
-visible_users = state.get("users", [])
-assert len(visible_users) == 0, "deleted row must not appear in queries"
-print("Row is tombstoned on both peers; snapshot hashes match")
+print("Row tombstoned on both peers. Hashes match.")
 
 e.close()
 ```
 
-**Key point:** tombstoned rows are retained in internal storage (they are not physically removed until GC). The tombstone is included in the snapshot hash computation so that peers agree on which rows are deleted.
+**What happens internally:** Deletion stamps `deleted=true` and writes a `Tombstone { table_id, row_id, version }`. Row merge applies `deleted = deleted_a OR deleted_b`. The tombstone is included in the BLAKE3 hash by existence (not by version), so peers agree on which rows are deleted regardless of sync order.
 
 ---
 
-## Example 5: Running the Benchmark Self-Check
+## Example 6: Foreign Key Under Partition — Child Outlives Parent
 
-The benchmark validates multi-peer convergence, partition/re-merge scenarios, and BLAKE3 hash agreement. The self-check embedded in `adapter.py` covers the basic sync case. The full suite is in `crates/benchmark/`.
+A child row is inserted on one peer while the parent is deleted on another. After sync, the child survives (tombstone FK policy).
 
-```bash
-# Quick smoke test (built into adapter.py __main__)
-python adapter/adapter.py
-# Expected output:
-# Hash A: <hex>
-# Hash B: <hex>
-# Hashes match: True
-# Users on A: [{'id': 'u1', ...}, {'id': 'u2', ...}]
-# Smoke test passed!
+```python
+from adapter.adapter import Engine
 
-# Full benchmark validation suite
-cargo test --lib
+e = Engine()
+e.open_peer("A")
+e.open_peer("B")
+e.open_peer("C")
 
-# Integration tests (randomized sync, partition simulation, snapshot validation)
-cargo test -p benchmark
+schema = [
+    "CREATE TABLE users  (id TEXT PRIMARY KEY, name TEXT)",
+    "CREATE TABLE orders (id TEXT PRIMARY KEY, user_id TEXT REFERENCES users(id), item TEXT)",
+]
+e.apply_schema("A", schema)
+e.apply_schema("B", schema)
+e.apply_schema("C", schema)
+
+# Seed user u1 on all peers
+e.execute("A", "INSERT INTO users (id, name) VALUES ('u1', 'Alice')")
+e.sync("A", "B")
+e.sync("A", "C")
+
+# Partition: C deletes u1; A inserts an order for u1
+e.execute("C", "DELETE FROM users WHERE id = 'u1'")
+e.execute("A", "INSERT INTO orders (id, user_id, item) VALUES ('o1', 'u1', 'Widget')")
+
+# Rejoin
+e.sync("A", "B")
+e.sync("B", "C")
+e.sync("A", "C")
+
+state = e.snapshot_state("A")
+orders = state.get("orders", [])
+assert any(o["id"] == "o1" for o in orders), "child order must survive parent deletion"
+users  = state.get("users",  [])
+assert len(users) == 0, "parent user must be tombstoned"
+
+print("Order o1 alive; user u1 tombstoned. Referential traceability preserved.")
+
+e.close()
 ```
 
-The benchmark test suite covers:
+**What happens internally:** `storage.get_row()` returns `Some` for tombstoned rows, so FK validation at insert time passes. After sync, the parent is tombstoned but the child is alive. This is the most information-preserving choice — the application can query both `snapshot_state` and tombstones to surface the broken reference.
 
-- **Randomized sync** (`randomized_sync.rs`) — multiple peers insert rows in random order, sync in random order, verify all hashes converge.
-- **Partition simulation** (`partition_simulation.rs`) — peers operate independently for multiple rounds, then re-merge; verifies delete-wins and LWW hold across partition boundaries.
-- **Snapshot validation** (`snapshot_validation.rs`) — verifies that BLAKE3 hashes are order-invariant: two peers that received the same operations in different orders produce identical hashes.
+---
+
+## Example 7: Three-Peer Convergence in Any Sync Order
+
+Three peers converge to the same hash regardless of sync order.
+
+```python
+from adapter.adapter import Engine
+
+e = Engine()
+for peer in ["A", "B", "C"]:
+    e.open_peer(peer)
+    e.apply_schema(peer, ["CREATE TABLE items (id TEXT PRIMARY KEY, val TEXT)"])
+
+# Each peer inserts a row offline
+e.execute("A", "INSERT INTO items VALUES ('i1', 'alpha')")
+e.execute("B", "INSERT INTO items VALUES ('i2', 'beta')")
+e.execute("C", "INSERT INTO items VALUES ('i3', 'gamma')")
+
+# Sync in one order
+e.sync("A", "B")
+e.sync("B", "C")
+e.sync("A", "C")
+
+hashes = {p: e.snapshot_hash(p) for p in ["A", "B", "C"]}
+assert len(set(hashes.values())) == 1, "all three peers must converge"
+print(f"All hashes equal: {hashes['A'][:16]}...")
+
+e.close()
+```
+
+The same result holds for any permutation of sync order — `A↔C` first, then `B↔C`, then `A↔B` — because the merge is commutative and associative.
+
+---
+
+## Example 8: Running the Full Benchmark
+
+```bash
+# Quick self-check (all six axes, weighted score)
+cd bench-harness/bench-p01-crdt
+python3 self_check.py --adapter adapters.anvil:Engine --fk-policy tombstone
+
+# Expected output:
+#   AXIS                          PASS    WEIGHT
+#   convergence                     PASS    0.30
+#   uniqueness:users.email          PASS    0.20
+#   fk                              PASS    0.15
+#   cell-level:u1                   PASS    0.10
+#   order-invariance                PASS    0.10
+#   randomized                      PASS    0.15
+#   WEIGHTED SCORE                1.00  / 1.00
+
+# Stress test with custom seeds
+python3 run.py --adapter adapters.anvil:Engine --fk-policy tombstone \
+  --randomized-seeds 9999 31415 27182 16180 11235 \
+  --rand-peers 5 --rand-ops 150 --out report.json
+
+# Unit + integration tests
+cargo test --lib --all
+cargo test -p benchmark
+```

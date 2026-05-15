@@ -1,30 +1,96 @@
-# Anvil Architecture
+# Anvil — Architecture
+
+## System Overview
+
+Anvil is structured as a Cargo workspace of 15 focused crates. The external surface is the `anvil` binary — a JSON-RPC subprocess that any language can drive. Internally, each replica is fully independent: it writes locally, merges on sync, and never contacts a coordinator.
+
+```
+                    ┌─────────────────────────────────┐
+                    │    Benchmark / Application       │
+                    │   (Python, via adapter.py RPC)   │
+                    └──────────────┬──────────────────┘
+                                   │  newline-delimited JSON
+                    ┌──────────────▼──────────────────┐
+                    │         anvil binary             │
+                    │    (crates/adapter/src/main.rs)  │
+                    └──────────────┬──────────────────┘
+                                   │
+                    ┌──────────────▼──────────────────┐
+                    │          EngineHost              │
+                    │   BTreeMap<PeerId, ReplicaState> │
+                    └──┬──────────┬──────────┬────────┘
+                       │          │          │
+               ┌───────▼──┐ ┌────▼────┐ ┌──▼──────┐
+               │ SQL Layer│ │  Sync   │ │ Hashing │
+               │ executor │ │ engine  │ │ BLAKE3  │
+               └───────┬──┘ └────┬────┘ └─────────┘
+                       │         │
+               ┌───────▼─────────▼──────────────────┐
+               │           ReplicaState              │
+               │  ┌──────────┐  ┌─────────────────┐ │
+               │  │ Storage  │  │  CRDT State     │ │
+               │  │ Engine   │  │  ┌────────────┐ │ │
+               │  │ (rows,   │  │  │ LamportClk │ │ │
+               │  │  schema) │  │  │ Tombstones │ │ │
+               │  └──────────┘  │  │ Uniqueness │ │ │
+               │                │  │ Frontier   │ │ │
+               │                │  └────────────┘ │ │
+               │                └─────────────────┘ │
+               └────────────────────────────────────┘
+```
+
+---
 
 ## Data Model
 
-### Version
+### Version — The Lamport Scalar Clock
 
 ```
-Version { counter: u64, peer_id: String }
+Version {
+    counter: u64,       // monotonically increasing per peer
+    peer_id: String,    // stable identifier of the originating peer
+}
+
+Ordering: (counter DESC, peer_id ASC)
 ```
 
-A Lamport logical timestamp paired with a stable peer identifier. Ordering: higher `counter` wins. On equal counters, the lexicographically higher `peer_id` wins. This makes ordering total and deterministic with no coordination.
+Every cell write advances the local clock by 1. On receiving a remote delta, the clock advances to `max(local, remote) + 1`. The `peer_id` tie-break makes the total order deterministic with no coordination. This is a **scalar Lamport clock**, not a vector clock — O(1) per cell, O(writers) total metadata.
 
-### Cell
+### Cell — The Unit of CRDT State
 
 ```
-Cell { value: Value, version: Version }
+Cell {
+    value:   Value,    // Null | Integer(i64) | Text(String) | Blob(Vec<u8>)
+    version: Version,
+}
 ```
 
-The smallest unit of CRDT state. Every column value in every row carries its own independent version. Values are typed: `Null`, `Integer(i64)`, `Text(String)`, or `Blob(Vec<u8>)`.
+Every column value in every row carries its own independent version. Merge is applied per-cell, not per-row. Concurrent writes to different columns both survive.
 
 ### Row
 
 ```
-Row { id: RowId, cells: BTreeMap<ColumnId, Cell>, deleted: bool, delete_version: Option<Version> }
+Row {
+    id:             RowId,                    // = primary key value as String
+    cells:          BTreeMap<ColumnId, Cell>, // sorted for determinism
+    deleted:        bool,
+    delete_version: Option<Version>,
+}
 ```
 
-A row is a map from column name to `Cell`. Deletion is recorded in-place via `deleted = true` and `delete_version`; the row is never physically removed from storage until GC runs. Only rows with `deleted = false` are visible to queries (`is_visible()`).
+Rows are never physically removed during normal operation. Deletion stamps `deleted = true` with a `delete_version`. Only rows where `deleted = false` are visible to queries.
+
+### Tombstone
+
+```
+Tombstone {
+    table_id: TableId,
+    row_id:   RowId,
+    version:  Version,   // when the deletion happened
+}
+```
+
+Stored separately from the row store. Used for GC eligibility checks and delta propagation.
 
 ### Frontier
 
@@ -32,115 +98,136 @@ A row is a map from column name to `Cell`. Deletion is recorded in-place via `de
 Frontier = BTreeMap<PeerId, u64>
 ```
 
-A compact summary of the highest Lamport counter observed from each peer. Used as the unit of anti-entropy comparison: if a cell's `version.counter > frontier[version.peer_id]`, it is new to that peer.
+A compact summary: the highest counter seen from each peer. A cell is "new" to a peer if `cell.version.counter > frontier[cell.version.peer_id]`. Grows O(1) per new distinct peer, not per write.
 
 ### SyncDelta
 
 ```
 SyncDelta {
-    source_peer: PeerId,
-    rows: Vec<RowDelta>,
-    tombstones: Vec<Tombstone>,
+    source_peer:       PeerId,
+    rows:              Vec<RowDelta>,
+    tombstones:        Vec<Tombstone>,
     uniqueness_claims: Vec<UniquenessClaim>,
-    frontier: Frontier,
+    frontier:          Frontier,
 }
 ```
 
-The payload exchanged between peers during sync. Contains only state newer than what the remote peer has already seen, plus the source peer's full frontier to advance the remote clock.
+The payload exchanged during sync. Contains only state not yet seen by the remote peer.
 
 ---
 
 ## Merge Invariants
 
-All merge operations on cells, rows, tombstones, and uniqueness claims satisfy the three CRDT lattice properties:
-
-**Associativity**
+All merge operations satisfy the three lattice properties, making Anvil a **state-based CRDT**:
 
 ```
-merge(a, merge(b, c)) == merge(merge(a, b), c)
+Associativity:  merge(A, merge(B, C)) = merge(merge(A, B), C)
+Commutativity:  merge(A, B) = merge(B, A)
+Idempotency:    merge(A, A) = A
 ```
 
-Applying deltas in any grouping produces the same final state. This means multi-hop relay (peer A → peer B → peer C) is equivalent to direct exchange.
+These hold because every merge decision reduces to a comparison of `Version` values under the total order `(counter DESC, peer_id ASC)`. There are no random or time-dependent choices.
 
-**Commutativity**
-
-```
-merge(a, b) == merge(b, a)
-```
-
-Applying a delta from peer A on top of peer B's state, or vice versa, yields the same result. Sync order does not matter.
-
-**Idempotency**
+### Cell Merge
 
 ```
-merge(a, a) == a
+merge_cell(a, b) → whichever has the higher Version
 ```
 
-Replaying the same delta has no effect. Retransmission and duplicate delivery are safe without deduplication logic.
+### Row Merge
 
-These properties hold because every merge decision reduces to a deterministic comparison of `Version` values using the total order `(counter, peer_id)`.
+```
+merge_row(a, b):
+  for each column: cells[col] = merge_cell(a.cells[col], b.cells[col])
+  deleted = a.deleted OR b.deleted           // delete-wins
+  delete_version = max(a.delete_version, b.delete_version)
+```
+
+Delete-wins means once a row is deleted on any peer, it stays deleted after merge — regardless of concurrent cell writes.
 
 ---
 
 ## Sync Protocol
 
-Sync between two peers is a bidirectional frontier-based delta exchange.
+### Step-by-Step
 
-### Frontier Comparison
+```
+Peer A                                    Peer B
+   │                                         │
+   │── extract_delta(A, B.frontier) ────────►│
+   │   (rows/tombstones A has, B hasn't)     │
+   │                                         │── apply_delta(B, delta_A)
+   │                                         │   merge cells, tombstones,
+   │                                         │   uniqueness claims
+   │◄── extract_delta(B, A.frontier) ────────│
+   │   (rows/tombstones B has, A hasn't)     │
+   │── apply_delta(A, delta_B)               │
+   │                                         │
+   │── advance_frontier(A, B.frontier) ─────►│
+   │◄── advance_frontier(B, A.frontier) ─────│
+   │                                         │
+[A.hash == B.hash]                    [quiescent]
+```
 
-Each peer tracks `Frontier: BTreeMap<PeerId, u64>`. Before sending, peer A asks: for each row and tombstone, is `version.counter > remote_frontier[version.peer_id]`? If yes, the remote peer has not yet seen that version.
+### Delta Extraction
 
-### Delta Extraction (`extract_delta`)
+`extract_delta(source, remote_frontier)` scans every cell in every row:
 
-`extract_delta(source, remote_frontier)` scans all rows in all tables. A row is included in the delta if any of its cells, or its `delete_version`, has a counter greater than what is recorded in `remote_frontier` for that peer. Tombstones are filtered the same way. Uniqueness claims are always included in full (they are small and idempotent to re-apply).
+```
+for each table, row, cell:
+    if cell.version.counter > remote_frontier[cell.version.peer_id]:
+        include row in delta
+for each tombstone:
+    if tombstone.version.counter > remote_frontier[tombstone.version.peer_id]:
+        include tombstone in delta
+```
 
-### Delta Application (`apply_delta`)
+Bandwidth is O(rows changed since last sync), not O(total rows).
 
-`apply_delta(target, delta)` performs:
+### Convergence Proof (Informal)
 
-1. For each `RowDelta`: merge the incoming row with the local row using cell-level LWW. If no local row exists, insert it directly.
-2. For each tombstone: update the in-storage row's `deleted` and `delete_version` if the incoming version is higher than the locally recorded one; insert the tombstone into the local tombstone store.
-3. Merge uniqueness claims from the delta into the local `UniquenessRegistry` (higher version wins).
-4. Advance the local Lamport clock from the remote frontier.
-5. Merge the remote frontier into the local frontier; update the local peer's own entry.
-
-### Bidirectional Sync
-
-A full pairwise sync between peers A and B consists of:
-1. `apply_delta(B, extract_delta(A, B.frontier))`
-2. `apply_delta(A, extract_delta(B, A.frontier))`
-
-After one round, both peers converge to the same logical state.
+The state space per cell is a join semilattice under the `Version` order. Each `apply_delta` call is monotone — it moves the local state up the lattice, never down. The lattice is finite (bounded by the counter which only increases). Therefore, repeated pairwise sync reaches a fixed point (quiescence) in a finite number of rounds. At quiescence, `extract_delta` returns empty on both sides, and `snapshot_hash` is identical on all peers.
 
 ---
 
 ## Uniqueness Protocol
 
-### Overview
+Pure CRDTs cannot enforce uniqueness — it requires at least one coordination step. Anvil uses a **reservation/claim protocol** that is non-blocking under partition and convergent on sync.
 
-UNIQUE constraints are implemented as a convergent reservation/claim protocol in `UniquenessRegistry`. Rather than rejecting conflicting inserts, all rows survive and the protocol deterministically selects one canonical owner.
-
-### Claim Semantics
-
-When a row inserts or updates a UNIQUE column, it calls:
+### Claim Lifecycle
 
 ```
-registry.claim(table_id, column_id, value, row_id, version)
+INSERT INTO users (id, email) VALUES ('u1', 'alice@x.com')
+       │
+       ▼
+registry.claim("users", "email", "alice@x.com", "u1", version)
+       │
+       ├── No existing claim  →  u1 becomes owner immediately
+       │
+       ├── Existing claim, incoming version HIGHER
+       │       →  challenger becomes new owner
+       │          previous owner appended to losers[]
+       │
+       └── Existing claim, incoming version LOWER
+               →  challenger appended to losers[]
+                  incumbent owner keeps the slot
 ```
-
-The registry stores `(table, column, value) -> UniquenessClaim { owner_row, version, losers }`.
-
-- If no claim exists for the key, the row becomes the owner immediately.
-- If a claim exists and the incoming version is higher, the challenger becomes the new owner. The previous owner is appended to `losers`.
-- If the incoming version is lower (or equal with a different row), the challenger is appended to `losers`. The incumbent owner keeps the slot.
-
-### Loser Preservation
-
-Losers are never deleted. Their rows remain in storage; they are simply marked as non-owners of the unique value. This preserves auditability and allows the application to detect conflicts after the fact. Queries that enforce UNIQUE semantics filter out loser rows from visible results.
 
 ### Merge
 
-`UniquenessRegistry::merge` applies the same higher-version-wins rule across two registries. The losers list from both sides is merged and deduplicated by `row_id`.
+When two registries sync:
+
+```
+for each (table, col, value) present in both:
+    winner = claim with higher version
+    losers = union(losers_A, losers_B) - {winner.owner_row}
+```
+
+Losers from both sides are merged and deduplicated. This ensures transitivity across multi-hop sync.
+
+### Visibility
+
+The query layer calls `uniqueness.is_owner(table, col, val, row_id)` before returning each row. Loser rows are physically present in storage (not tombstoned) but hidden from `snapshot_state` and `SELECT`. This preserves auditability and allows application-level conflict surfacing.
 
 ---
 
@@ -148,94 +235,85 @@ Losers are never deleted. Their rows remain in storage; they are simply marked a
 
 ### Algorithm
 
-`SnapshotHasher` (in the `hashing` crate) computes a deterministic BLAKE3 hash over the canonical database state using three sub-hashes combined in sequence:
+```
+full_hash = BLAKE3(
+    hash_tables(visible rows: id + column values only),
+    hash_tombstones(table_id + row_id only, sorted),
+    hash_uniqueness(table + col + value + owner_row_id only, sorted)
+)
+```
 
-1. **Table hash** — iterates tables in BTree (alphabetical) order, rows in primary-key order, columns in lexicographic order, hashing column values only.
-2. **Tombstone hash** — iterates tombstones sorted by `(table_id, row_id)`, hashing only the pair (not the version).
-3. **Uniqueness hash** — iterates claims sorted by `(table_id, column_id, value)`, hashing only the owner `row_id` (not the version or losers list).
+### Included vs. Excluded
 
-The three sub-hashes are fed into a final BLAKE3 hasher to produce the full snapshot hash.
+| Included | Excluded |
+|---|---|
+| Row IDs of visible rows | Lamport counters |
+| Column values of visible rows | Peer IDs in versions |
+| Which rows are deleted (existence) | Tombstone versions |
+| Which row owns each unique value | Uniqueness claim versions |
+| | Loser lists |
 
-### What is Hashed
-
-- Row IDs of visible rows
-- Column values of visible rows
-- Existence of tombstones (which rows are deleted)
-- Ownership assignment for unique values (which row owns each unique value)
-
-### What is NOT Hashed
-
-- Lamport versions / counters
-- Peer IDs embedded in versions
-- Tombstone versions
-- Uniqueness claim versions
-- Loser lists
-
-### Why
-
-Lamport clocks vary with sync order — the same logical insert from peer A may arrive at peer B with a different counter depending on when the sync happened. Excluding all clock metadata means the hash is **order-invariant**: two peers that have received the same set of operations in any order will produce the same snapshot hash, which is the convergence check used by the benchmark validation suite.
+**Why exclude versions?** Lamport counters vary with sync order — the same logical insert from peer A may arrive at peer B with a different counter depending on what peer B had seen previously. Including clock metadata would make the hash sync-order-dependent, breaking the order-invariance property. By hashing only semantic content, two peers that have received the same set of logical operations in any order produce identical hashes.
 
 ---
 
 ## SQL Layer
 
+Anvil implements a SQL executor over the CRDT storage engine using `sqlparser-rs 0.54`.
+
 ### Supported Statements
 
-| Statement | Notes |
+| Statement | CRDT Behaviour |
 |---|---|
-| `CREATE TABLE` | Parses column types, `PRIMARY KEY`, `NOT NULL`, `UNIQUE`, `DEFAULT`, `REFERENCES ... ON DELETE` |
-| `CREATE INDEX` | Creates a named secondary index over one or more columns |
-| `INSERT INTO ... VALUES` | Assigns a Lamport version to every inserted cell; registers uniqueness claims |
-| `UPDATE ... SET ... WHERE` | Per-cell versioned update; re-registers uniqueness claims for updated UNIQUE columns |
-| `DELETE FROM ... WHERE` | Stamps matched rows with `deleted = true` and a delete version; inserts tombstones |
-| `SELECT ... FROM ... WHERE ... ORDER BY ... LIMIT` | Operates on visible rows only (tombstoned rows hidden); supports `*` and named column projections |
-
-SQL is parsed by `sqlparser-rs`. Parameterized queries are supported via positional `?` placeholders.
+| `CREATE TABLE` | Registers schema; no version |
+| `CREATE INDEX` | Creates BTreeMap secondary index |
+| `INSERT INTO … VALUES` | Assigns Lamport version to each cell; registers uniqueness claims |
+| `UPDATE … SET … WHERE` | Per-cell versioned update; re-registers uniqueness claims for UNIQUE cols |
+| `DELETE FROM … WHERE` | Stamps `deleted=true` + `delete_version`; inserts tombstone |
+| `SELECT … WHERE … ORDER BY … LIMIT` | Operates on visible rows only; tombstoned and uniqueness-loser rows hidden |
 
 ### FK Tombstone Policy
 
-Foreign key references use the `Tombstone` policy. When a parent row is deleted:
+```
+Parent deleted on peer C    Child inserted on peer A
+        │                           │
+        ▼                           ▼
+  parent row:                 FK check passes because
+  deleted=true                storage.get_row() returns
+  (tombstone)                 Some for tombstoned rows
+        │                           │
+        └─────── sync ──────────────┘
+                    │
+                    ▼
+           Both rows visible:
+           - parent: tombstoned (hidden from queries)
+           - child:  alive, user_id = parent's id
+```
 
-- The parent row is marked as a tombstone in storage.
-- Any child row that references it via a FK column continues to exist and remain visible.
-- The tombstoned parent row is hidden from normal queries but its row ID remains resolvable for FK integrity checks.
-- This policy is declared in the schema as `ON DELETE CASCADE` mapped to `FkPolicy::Tombstone` at the engine level.
+One policy, applied uniformly. Cascade and orphan require coordination or information loss under partition; tombstone preserves maximum information.
 
 ---
 
-## Python Adapter
+## Python Adapter (JSON-RPC Protocol)
 
-### Overview
+The `anvil` binary reads newline-delimited JSON from stdin and writes responses to stdout. One request → one response.
 
-The Python adapter (`adapter/adapter.py`) is a thin bridge between the Python benchmark harness and the Rust engine. It communicates with the `anvil` subprocess binary via a newline-delimited JSON-RPC protocol over stdin/stdout.
-
-### Protocol
-
-Each request is a JSON object followed by a newline:
+### Request / Response Format
 
 ```json
-{"cmd": "<Command>", "args": { ... }}
+Request:  {"cmd": "Execute", "args": {"peer_id": "A", "sql": "INSERT ...", "params": []}}
+Response: {"status": "ok", "result": null}
+          {"status": "error", "message": "table not found: users"}
 ```
 
-Each response is a JSON object followed by a newline:
-
-```json
-{"status": "ok", "result": <value>}
-{"status": "error", "message": "<description>"}
-```
-
-### Commands
+### Command Reference
 
 | Command | Arguments | Returns |
 |---|---|---|
-| `OpenPeer` | `peer_id: str` | null |
-| `ApplySchema` | `peer_id: str, stmts: [str]` | null |
-| `Execute` | `peer_id: str, sql: str, params: [value]` | query result rows or null |
-| `Sync` | `peer_a: str, peer_b: str` | null |
-| `SnapshotHash` | `peer_id: str` | hex string |
-| `SnapshotState` | `peer_id: str` | `{table: [{col: value}]}` |
-| `Close` | `{}` | null |
-
-### Engine Class
-
-The `Engine` class in `adapter.py` implements the benchmark harness adapter interface. It locates the `anvil` binary (preferring the release build), spawns it as a subprocess, and proxies all method calls through `_AnvilProcess`. The `close()` method sends a `Close` command and waits for the process to exit cleanly.
+| `OpenPeer` | `peer_id` | `null` |
+| `ApplySchema` | `peer_id`, `stmts: [str]` | `null` |
+| `Execute` | `peer_id`, `sql`, `params` | rows or `null` |
+| `Sync` | `peer_a`, `peer_b` | `null` |
+| `SnapshotHash` | `peer_id` | `"<64-char hex>"` |
+| `SnapshotState` | `peer_id` | `{"table": [{"col": val}]}` |
+| `Close` | `{}` | `null` |
