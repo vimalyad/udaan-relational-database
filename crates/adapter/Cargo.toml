@@ -14,6 +14,8 @@ storage = { path = "../storage" }
 replication = { path = "../replication" }
 sync = { path = "../sync" }
 sql = { path = "../sql" }
+index = { path = "../index" }
+query = { path = "../query" }
 hashing = { path = "../hashing" }
 gc = { path = "../gc" }
 hex = { workspace = true }
