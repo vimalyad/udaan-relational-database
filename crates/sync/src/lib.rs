@@ -16,7 +16,6 @@ pub use session::sync_peers;
 mod tests {
     use super::*;
     use core::types::{Cell, Row, Tombstone, Value, Version};
-    use crdt::{LamportClock, TombstoneStore, UniquenessRegistry};
     use replication::ReplicaState;
 
     fn text_row(id: &str, col: &str, val: &str, counter: u64, peer: &str) -> Row {

@@ -132,7 +132,7 @@ mod tests {
     fn rollback_discards_ops() {
         let mut storage = StorageEngine::new();
         storage.create_table("t");
-        let mut ts = TombstoneStore::new();
+        let _ts = TombstoneStore::new();
 
         let mut txn = Transaction::new();
         txn.buffer_upsert("t", make_row("r1"));

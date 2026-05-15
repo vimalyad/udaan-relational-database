@@ -225,7 +225,7 @@ mod tests {
         r2.deleted = true;
         r2.delete_version = Some(Version::new(2, "B".to_string()));
 
-        let rows = vec![r1, r2];
+        let rows = [r1, r2];
         mgr.rebuild_table("users", rows.iter());
 
         let idx = mgr.get_index("users", "idx_name").unwrap();

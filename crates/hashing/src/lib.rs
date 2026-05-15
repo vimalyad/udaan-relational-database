@@ -134,6 +134,7 @@ mod tests {
     use super::*;
     use core::types::{Cell, Value, Version};
 
+    #[allow(dead_code)]
     fn row_with_val(id: &str, col: &str, val: &str, counter: u64, peer: &str) -> Row {
         let mut row = Row::new(id);
         row.cells.insert(
