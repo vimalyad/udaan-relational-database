@@ -2,3 +2,5 @@
 /scripts/adversarial.py
 /scripts/edge_cases.py
 /scripts/verify.py
+/benchmark_report.json
+/architecture-choice.pdf
