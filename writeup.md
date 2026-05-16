@@ -1,5 +1,7 @@
 # Anvil Design Defense
 
+Team: Udaan
+
 Anvil is a CRDT-native relational database prototype built for offline multi-writer OLTP. The design goal is to let each peer accept local SQL writes, exchange deltas later, and converge to a deterministic relational state without a coordinator. The current full L3 benchmark score is `0.9000 / 1.0000` (`core_score = 1.00`, `stretch_score = 0.75`). One known stretch limitation remains in a multi-level FK cascade edge case; the implementation keeps a generalized causal model instead of hardcoding visible benchmark data.
 
 ## Design Goals

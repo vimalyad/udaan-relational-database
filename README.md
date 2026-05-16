@@ -1,5 +1,7 @@
 # Anvil - CRDT-Native Relational Database
 
+**Team:** Udaan
+
 Anvil is a multi-writer embedded relational database prototype. Each peer writes locally, syncs by exchanging CRDT deltas, and converges without a coordinator. The SQL surface is intentionally SQLite-like, while the storage layer keeps CRDT metadata for cell-level merge, tombstones, uniqueness claims, and FK policy enforcement.
 
 **Verified benchmark result:** `0.9000 / 1.0000` on the full `anvil-2026-p01-L3-final` runner.
