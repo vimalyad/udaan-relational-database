@@ -1,4 +1,4 @@
-# Anvil - CRDT-Native Relational Database
+# CRDT-Native Relational Database
 
 **Team:** Udaan
 
