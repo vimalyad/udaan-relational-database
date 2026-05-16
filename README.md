@@ -1,58 +1,79 @@
-# Anvil — CRDT-Native Relational Database
+# Anvil - CRDT-Native Relational Database
 
-> A relational engine that never disagrees, even when nobody is online.
+Anvil is a multi-writer embedded relational database prototype. Each peer writes locally, syncs by exchanging CRDT deltas, and converges without a coordinator. The SQL surface is intentionally SQLite-like, while the storage layer keeps CRDT metadata for cell-level merge, tombstones, uniqueness claims, and FK policy enforcement.
 
-Anvil is a multi-writer embedded OLTP engine with a SQLite-like SQL surface and CRDT-native internals. Multiple replicas mutate locally without coordination. Merges converge. Relational invariants — uniqueness, foreign keys, secondary indexes — survive arbitrary network partitions.
+**Verified benchmark result:** `0.9000 / 1.0000` on the full `anvil-2026-p01-L3-final` runner.
 
-**Benchmark score: 1.00 / 1.00** across convergence, uniqueness, FK, cell-level merge, order-invariance, and randomized multi-peer scenarios.
+Current breakdown:
+
+| Area | Result |
+|---|---|
+| Core benchmark axes | `1.00 / 1.00` |
+| L3 stretch axes | `0.75 / 1.00` |
+| Final weighted score | `0.90 / 1.00` |
+
+Known remaining limitation: one multi-level FK cascade edge case remains in the stretch suite. The current implementation favors a causal/generalized FK interpretation over benchmark-specific hardcoding.
 
 ---
 
 ## Quick Start
 
-**Prerequisites:** Rust 1.95+, Python 3.10+
+Prerequisites:
 
-### Linux / macOS
+- Rust toolchain from `rust-toolchain.toml`
+- Python 3.10+
+
+Linux/macOS:
 
 ```bash
 git clone https://github.com/vimalyad/udaan-relational-database
 cd udaan-relational-database
 
-# Build the engine binary
-cargo build --release
-
-# Run the benchmark self-check
+cargo build --release -p adapter
 cd bench-harness/bench-p01-crdt
-python3 self_check.py --adapter adapters.anvil:Engine --fk-policy tombstone
+python3 run.py --adapter adapters.anvil:Engine --fk-policy tombstone --out l3_report.json
 ```
 
-### Windows
+Windows PowerShell:
 
-```bat
+```powershell
 git clone https://github.com/vimalyad/udaan-relational-database
 cd udaan-relational-database
 
-:: Build the engine binary
-cargo build --release
-
-:: Run the benchmark self-check
+cargo build --release -p adapter
 cd bench-harness\bench-p01-crdt
-python self_check.py --adapter adapters.anvil:Engine --fk-policy tombstone
+python run.py --adapter adapters.anvil:Engine --fk-policy tombstone --out l3_report.json
 ```
 
-Expected output:
-```
-  AXIS                          PASS    WEIGHT
-  convergence                     PASS    0.30
-  uniqueness:users.email          PASS    0.20
-  fk                              PASS    0.15
-  cell-level:u1                   PASS    0.10
-  order-invariance                PASS    0.10
-  randomized                      PASS    0.15
-  WEIGHTED SCORE                1.00  / 1.00
+The adapter automatically looks for `target/release/anvil` on Linux/macOS and `target\release\anvil.exe` on Windows.
+
+---
+
+## Run Checks
+
+From the repository root:
+
+```bash
+cargo fmt --check
+cargo test --workspace
+cargo build --release -p adapter
 ```
 
-### Using Docker (reproducible, no Rust required)
+Full L3 benchmark:
+
+```bash
+cd bench-harness/bench-p01-crdt
+python3 run.py --adapter adapters.anvil:Engine --fk-policy tombstone --out l3_report.json
+```
+
+Fast smoke benchmark:
+
+```bash
+cd bench-harness/bench-p01-crdt
+python3 run.py --adapter adapters.anvil:Engine --fk-policy tombstone --long-run-ops 50 --out smoke_report.json
+```
+
+Docker:
 
 ```bash
 docker build -t anvil .
@@ -61,88 +82,84 @@ docker run --rm anvil
 
 ---
 
-## What It Does
+## Run Your Own Testcases
+
+Use the Python adapter from a script:
+
+```python
+from adapter.adapter import Engine
+
+e = Engine()
+try:
+    for peer in ["A", "B"]:
+        e.open_peer(peer)
+        e.apply_schema(peer, [
+            "CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, name TEXT)",
+        ])
+
+    e.execute("A", "INSERT INTO users (id, email, name) VALUES ('u1', 'a@x.com', 'Alice')")
+    e.execute("B", "INSERT INTO users (id, email, name) VALUES ('u2', 'b@x.com', 'Bob')")
+    e.sync("A", "B")
+
+    assert e.snapshot_hash("A") == e.snapshot_hash("B")
+    print(e.snapshot_state("A"))
+finally:
+    e.close()
+```
+
+Run it after building:
+
+```bash
+cargo build --release -p adapter
+python3 your_test.py
+```
+
+See [EXAMPLES.md](EXAMPLES.md) for more scenarios.
+
+---
+
+## What It Supports
 
 | Capability | Implementation |
 |---|---|
-| `CREATE TABLE / INDEX` | Full DDL with PK, UNIQUE, NOT NULL, DEFAULT, REFERENCES |
-| `INSERT / UPDATE / DELETE` | Cell-level CRDT writes with Lamport versioning |
-| `SELECT … WHERE … ORDER BY … LIMIT` | Operates on deterministically merged local replica |
-| Arithmetic in UPDATE | `SET score = score + 5` and `+`, `-`, `*`, `/`, `%` supported |
-| NULL semantics | SQL-correct: `NULL = NULL` is UNKNOWN; `IS NULL` / `IS NOT NULL` work as expected |
-| Concurrent writes, no coordinator | Peers write offline; sync at any time in any order |
-| Uniqueness under partition | Reservation/claim protocol — loser preserved and hidden at query time |
-| Foreign keys under partition | Tombstone policy — child survives parent deletion; FK deferred to merge time |
-| Convergence verification | BLAKE3 snapshot hash — order-invariant, version-independent |
+| DDL | `CREATE TABLE`, `CREATE INDEX`, primary keys, `UNIQUE`, `NOT NULL`, defaults, FK declarations |
+| DML | `INSERT`, `UPDATE`, `DELETE`, `SELECT ... WHERE ... ORDER BY ... LIMIT` |
+| Merge unit | Per-cell LWW registers with Lamport versions |
+| Deletes | Delete-wins rows with tombstone metadata |
+| Sync | Frontier-based delta extraction and idempotent apply |
+| Uniqueness | Schema-driven claim registry for single-column and composite unique constraints |
+| FK policy | Deferred merge-time handling for tombstone, cascade, and orphan semantics |
+| Hashing | BLAKE3 over semantic state for deterministic convergence checks |
+| Adapter | JSON-lines subprocess bridge used by the Python benchmark harness |
 
 ---
 
-## Architecture
+## Architecture Summary
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    Python / Benchmark                    │
-│                     adapter.py (RPC)                     │
-└───────────────────────┬─────────────────────────────────┘
-                        │  JSON-RPC over stdin/stdout
-┌───────────────────────▼─────────────────────────────────┐
-│                  anvil (Rust binary)                     │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌────────┐  │
-│  │   SQL    │  │   Sync   │  │ Hashing  │  │  GC    │  │
-│  │ Executor │  │  Engine  │  │ (BLAKE3) │  │        │  │
-│  └────┬─────┘  └────┬─────┘  └──────────┘  └────────┘  │
-│       │              │                                   │
-│  ┌────▼──────────────▼──────────────────────────────┐   │
-│  │              ReplicaState (per peer)              │   │
-│  │  storage · schemas · tombstones · uniqueness      │   │
-│  │  frontier · clock · indexes                       │   │
-│  └───────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────┘
+Python benchmark / custom tests
+        |
+        | newline-delimited JSON
+        v
+target/release/anvil
+        |
+        v
+EngineHost
+  - peer id -> ReplicaState
+  - SQL executor
+  - sync/apply_delta
+  - post-merge integrity enforcement
+        |
+        v
+ReplicaState
+  - StorageEngine
+  - SchemaStore
+  - Lamport clock + frontier
+  - TombstoneStore
+  - UniquenessRegistry
 ```
 
-The Python adapter spawns the `anvil` binary as a **subprocess** and communicates via JSON lines over stdin/stdout — no ports, no sockets. All peers live in-memory inside the single Rust process; `sync(A, B)` moves delta rows between two in-memory replicas.
-
-### Key Design Decisions
-
-| Decision | Choice | Reason |
-|---|---|---|
-| Conflict resolution | Cell-level LWW | Row-level LWW loses concurrent updates to different columns |
-| Clock | Lamport scalar `(counter, peer_id)` | O(1) per cell; O(writers) total — bounded metadata |
-| Delete semantics | Delete-wins tombstone | Prevents zombie row resurrection after partition |
-| Uniqueness | Reservation/claim protocol | Pure CRDTs cannot enforce uniqueness; 2PC blocks under partition |
-| FK enforcement | Eventually-consistent (deferred) | Enforcing FK at write time breaks partition tolerance — referenced row may only exist on an unsynced peer |
-| Hash | BLAKE3 over semantic content only | Excluding clock metadata makes hash order-invariant |
-| Multi-row INSERT | Validation pass before write pass | All rows validated atomically; any failure rolls back the entire statement |
-
----
-
-## Demo Scripts
-
-Simulates a 4-peer distributed setup where each peer writes data offline before syncing.
-
-### Linux / macOS
-
-```bash
-cargo build --release
-python3 scripts/peer_a.py     # Peer A writes users + orders
-python3 scripts/peer_b.py     # Peer B writes users + orders (FK cross-peer)
-python3 scripts/peer_c.py     # Peer C demonstrates tombstone
-python3 scripts/peer_d.py     # Peer D demonstrates LWW conflict
-python3 scripts/sync_demo.py  # Simulates ring sync + convergence verification
-```
-
-### Windows
-
-```bat
-cargo build --release
-python scripts\peer_a.py
-python scripts\peer_b.py
-python scripts\peer_c.py
-python scripts\peer_d.py
-python scripts\sync_demo.py
-```
-
-Each peer script writes a `peer_X_state.json` snapshot. `sync_demo.py` runs all four peers, syncs them in a ring, and verifies all hashes converge.
+More detail is in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ---
 
@@ -150,70 +167,19 @@ Each peer script writes a `peer_X_state.json` snapshot. `sync_demo.py` runs all 
 
 | Crate | Responsibility |
 |---|---|
-| `core` | Shared types: `Version`, `Cell`, `Row`, `Tombstone`, `Frontier`, `UniquenessClaim`, `SyncDelta`, `TableSchema` |
-| `crdt` | Lamport clock, cell/row/table merge, tombstone store, uniqueness registry |
-| `storage` | In-memory BTreeMap row store, schema store, CBOR serialization |
-| `replication` | Per-peer replica: clock, storage, CRDT state, frontier |
-| `sync` | `extract_delta`, `apply_delta`, `sync_peers`, `sync_to_quiescence` |
-| `hashing` | BLAKE3 snapshot hasher — order-invariant, version-excluded |
-| `sql` | sqlparser-rs DDL/DML executor with CRDT write semantics |
-| `index` | Deterministic BTreeMap secondary indexes |
-| `transaction` | Local transaction context with row-level atomicity and rollback |
-| `gc` | Causal-stability tombstone garbage collection |
-| `query` | Query result types, SELECT/WHERE/ORDER BY/LIMIT |
-| `network` | Transport abstraction layer |
-| `wasm-runtime` | WASM/wasm-bindgen bindings |
-| `adapter` | `anvil` subprocess binary — JSON-RPC bridge (cross-platform) |
-| `benchmark` | Validation suite: randomized sync, partition simulation, convergence |
-
----
-
-## Running Tests
-
-### Linux / macOS
-
-```bash
-# Library unit tests (all crates)
-cargo test --lib --all
-
-# Benchmark integration tests
-cargo test -p benchmark
-
-# Full benchmark with custom seeds
-cd bench-harness/bench-p01-crdt
-python3 run.py --adapter adapters.anvil:Engine --fk-policy tombstone \
-  --randomized-seeds 9999 31415 27182 16180 11235 \
-  --rand-peers 5 --rand-ops 150 --out report.json
-```
-
-### Windows
-
-```bat
-cargo test --lib --all
-cargo test -p benchmark
-
-cd bench-harness\bench-p01-crdt
-python run.py --adapter adapters.anvil:Engine --fk-policy tombstone ^
-  --randomized-seeds 9999 31415 27182 16180 11235 ^
-  --rand-peers 5 --rand-ops 150 --out report.json
-```
-
----
-
-## Dependencies
-
-| Dependency | Version | Purpose |
-|---|---|---|
-| `sqlparser` | 0.54 | SQL parsing |
-| `blake3` | 1.x | Snapshot hashing |
-| `serde` / `serde_json` | 1.x | JSON-RPC serialization |
-| `ciborium` | 0.2 | CBOR canonical encoding |
-| `thiserror` / `anyhow` | 2.x / 1.x | Error handling |
-| `hex` | 0.4 | Hash hex encoding |
-| `wasm-bindgen` | 0.2 | WASM bindings |
+| `core` | Shared types: rows, cells, versions, tombstones, schema, sync deltas |
+| `crdt` | Lamport clock, merge rules, tombstones, uniqueness registry |
+| `storage` | Deterministic in-memory row and schema storage |
+| `replication` | Per-peer replica state |
+| `sync` | Delta extraction and apply |
+| `sql` | SQL parsing/execution over CRDT state |
+| `index` | Deterministic secondary indexes |
+| `hashing` | BLAKE3 snapshot hashing |
+| `adapter` | `anvil` JSON-RPC subprocess binary |
+| `benchmark` | Rust-side validation tests |
 
 ---
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT - see [LICENSE](LICENSE).

@@ -1,41 +1,35 @@
-# Anvil · Problems & Evaluation
+# Benchmark Harness
 
-Problem statements and benchmark harnesses for the Anvil hackathon.
+The active benchmark is:
 
-## Layout
-
-```
-index.html              Full problem statement dashboard (open in a browser)
-bench-p01-crdt/         Benchmark harness for P-01 · CRDT-Native OLTP
-bench-p02-context/      Benchmark harness for P-02 · Persistent Context Engine
+```text
+bench-harness/bench-p01-crdt
 ```
 
-## Open the dashboard
-
-```
-open index.html
-```
-
-Four tabs. Two open tracks (P-01, P-02). Two sponsored tracks (P-03 Omium, P-04 MetaCognition).
-
-## Running a benchmark
-
-Each bench is pure Python, stdlib only, no external dependencies. Write an adapter that wraps your engine, run the self-check.
+Build from repository root:
 
 ```bash
-# P-01
-cd bench-p01-crdt
-python self_check.py --adapter adapters.dummy:DummyAdapter --fk-policy cascade
-
-# P-02
-cd bench-p02-context
-python self_check.py --adapter adapters.dummy:DummyAdapter
+cargo build --release -p adapter
 ```
 
-The dummy adapters are intentionally weak baselines — they validate the harness and demonstrate the interface. Your engine plugs in as `adapters/<yourteam>.py`.
+Run the full L3 benchmark:
 
-See each bench's own README for the adapter contract, scoring axes, and the three-layer anti-gaming model (L1 canonical / L2 property-based / L3 held-out adversarial).
+```bash
+cd bench-harness/bench-p01-crdt
+python3 run.py --adapter adapters.anvil:Engine --fk-policy tombstone --out l3_report.json
+```
 
-## License
+Fast smoke run:
 
-TBD.
+```bash
+cd bench-harness/bench-p01-crdt
+python3 run.py --adapter adapters.anvil:Engine --fk-policy tombstone --long-run-ops 50 --out smoke_report.json
+```
+
+Verified score for the current engine revision:
+
+```text
+core_score     1.00 / 1.00
+stretch_score  0.75 / 1.00
+final_score    0.90 / 1.00
+```

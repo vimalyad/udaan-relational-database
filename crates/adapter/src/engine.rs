@@ -5,7 +5,9 @@ use core::types::{Row, Value};
 use hashing::SnapshotHasher;
 use index::IndexManager;
 use replication::ReplicaState;
-use sql::SqlExecutor;
+use sql::{
+    enforce_fk_cascades, enforce_uniqueness_tombstones, is_effective_unique_winner, SqlExecutor,
+};
 use std::collections::BTreeMap;
 use sync::{apply_delta, extract_delta};
 
@@ -105,7 +107,18 @@ impl EngineHost {
         {
             let (b, b_idx) = self.peers.get_mut(peer_b_id).unwrap();
             apply_delta(b, &delta_for_b).map_err(|e| e.to_string())?;
-            // Rebuild indexes after merge
+            // 1. FK cascades first: propagate deletions to children before resolving uniqueness.
+            //    This ensures that if a uniqueness winner is cascade-deleted, the loser promotion
+            //    (step 2) sees the winner as dead and preserves the effective winner in the same
+            //    sync cycle.
+            enforce_fk_cascades(b);
+            // 2. Tombstone uniqueness losers (auditable conflict lifecycle).
+            //    Preserves effective winners when the canonical owner is already dead.
+            enforce_uniqueness_tombstones(b);
+            // 3. Re-run FK cascades: newly tombstoned uniqueness losers may themselves be FK
+            //    parents whose children need cascading.
+            enforce_fk_cascades(b);
+            // Rebuild indexes after merge and integrity enforcement
             for table in b.storage.table_names() {
                 let rows: Vec<Row> = b.storage.all_rows(&table).cloned().collect();
                 b_idx.rebuild_table(&table, rows.iter());
@@ -114,6 +127,9 @@ impl EngineHost {
         {
             let (a, a_idx) = self.peers.get_mut(peer_a_id).unwrap();
             apply_delta(a, &delta_for_a).map_err(|e| e.to_string())?;
+            enforce_fk_cascades(a);
+            enforce_uniqueness_tombstones(a);
+            enforce_fk_cascades(a);
             for table in a.storage.table_names() {
                 let rows: Vec<Row> = a.storage.all_rows(&table).cloned().collect();
                 a_idx.rebuild_table(&table, rows.iter());
@@ -157,10 +173,16 @@ impl EngineHost {
 
         // Tables sorted by name (BTreeMap order guarantees this)
         for table_name in replica.storage.table_names() {
-            let unique_cols: Vec<String> = replica
-                .schemas
-                .get(&table_name)
+            let schema = replica.schemas.get(&table_name).cloned();
+
+            let unique_cols: Vec<String> = schema
+                .as_ref()
                 .map(|s| s.unique_columns().iter().map(|c| c.name.clone()).collect())
+                .unwrap_or_default();
+
+            let composite_constraints: Vec<core::types::UniqueConstraintDef> = schema
+                .as_ref()
+                .map(|s| s.composite_unique_constraints().to_vec())
                 .unwrap_or_default();
 
             // Rows sorted by PK (BTreeMap row store order guarantees this)
@@ -168,14 +190,36 @@ impl EngineHost {
                 .storage
                 .visible_rows(&table_name)
                 .filter(|row| {
-                    // Exclude uniqueness losers — rows that lost the reservation race
-                    // for any unique column value they hold
+                    // Single-column uniqueness filter (all value types, including Integer)
                     for col in &unique_cols {
                         if let Some(cell) = row.cells.get(col) {
-                            if let core::types::Value::Text(ref v) = cell.value {
-                                if !replica.uniqueness.is_owner(&table_name, col, v, &row.id) {
+                            if cell.value != core::types::Value::Null {
+                                let val_str = cell.value.to_string();
+                                if !is_effective_unique_winner(
+                                    &replica.uniqueness,
+                                    &replica.storage,
+                                    &table_name,
+                                    col,
+                                    &val_str,
+                                    &row.id,
+                                ) {
                                     return false;
                                 }
+                            }
+                        }
+                    }
+                    // Composite unique constraint filter
+                    for constraint in &composite_constraints {
+                        if let Some(val_key) = constraint.value_key_from_cells(&row.cells) {
+                            if !is_effective_unique_winner(
+                                &replica.uniqueness,
+                                &replica.storage,
+                                &table_name,
+                                &constraint.constraint_key(),
+                                &val_key,
+                                &row.id,
+                            ) {
+                                return false;
                             }
                         }
                     }

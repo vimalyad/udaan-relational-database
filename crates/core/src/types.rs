@@ -199,6 +199,48 @@ pub enum FkPolicy {
     Orphan,
 }
 
+/// Composite unique constraint: the tuple of column values must be unique across all rows.
+/// Single-column unique constraints are encoded in `ColumnSchema.unique`.
+/// This type is used only for multi-column composite constraints.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UniqueConstraintDef {
+    /// Ordered list of column names that together form the composite unique key.
+    pub columns: Vec<ColumnId>,
+}
+
+impl UniqueConstraintDef {
+    /// Canonical registry key for this constraint (column names joined with unit separator).
+    pub fn constraint_key(&self) -> String {
+        self.columns.join("\x1f")
+    }
+
+    /// Compute the combined value key from a row's cells.
+    /// Returns None if any participating column is NULL or absent.
+    pub fn value_key_from_cells(&self, cells: &BTreeMap<ColumnId, Cell>) -> Option<String> {
+        let mut parts = Vec::with_capacity(self.columns.len());
+        for col in &self.columns {
+            match cells.get(col).map(|c| &c.value) {
+                Some(Value::Null) | None => return None,
+                Some(v) => parts.push(v.to_string()),
+            }
+        }
+        Some(parts.join("\x1f"))
+    }
+
+    /// Compute the combined value key from a plain value map (used during INSERT).
+    /// Returns None if any participating column is NULL or absent.
+    pub fn value_key_from_values(&self, vals: &BTreeMap<ColumnId, Value>) -> Option<String> {
+        let mut parts = Vec::with_capacity(self.columns.len());
+        for col in &self.columns {
+            match vals.get(col) {
+                Some(Value::Null) | None => return None,
+                Some(v) => parts.push(v.to_string()),
+            }
+        }
+        Some(parts.join("\x1f"))
+    }
+}
+
 /// Table schema.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TableSchema {
@@ -206,6 +248,9 @@ pub struct TableSchema {
     pub columns: Vec<ColumnSchema>,
     pub foreign_keys: Vec<ForeignKeyDef>,
     pub indexes: Vec<IndexDef>,
+    /// Multi-column composite unique constraints (declared at table level).
+    /// Single-column constraints live in `ColumnSchema.unique`.
+    pub unique_constraints: Vec<UniqueConstraintDef>,
 }
 
 impl TableSchema {
@@ -222,6 +267,12 @@ impl TableSchema {
 
     pub fn column(&self, name: &str) -> Option<&ColumnSchema> {
         self.columns.iter().find(|c| c.name == name)
+    }
+
+    /// All composite (multi-column) unique constraints for this table.
+    /// Single-column constraints are separately accessible via `unique_columns()`.
+    pub fn composite_unique_constraints(&self) -> &[UniqueConstraintDef] {
+        &self.unique_constraints
     }
 }
 

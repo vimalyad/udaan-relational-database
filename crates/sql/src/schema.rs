@@ -1,7 +1,10 @@
 //! SQL DDL schema parsing: CREATE TABLE, CREATE INDEX.
 
 use core::error::{CrdtError, CrdtResult};
-use core::types::{ColumnSchema, DataType, FkPolicy, ForeignKeyDef, IndexDef, TableSchema, Value};
+use core::types::{
+    ColumnSchema, DataType, FkPolicy, ForeignKeyDef, IndexDef, TableSchema, UniqueConstraintDef,
+    Value,
+};
 use sqlparser::ast::{
     ColumnOption, DataType as SqlType, ObjectName, ReferentialAction, Statement, TableConstraint,
 };
@@ -13,7 +16,10 @@ pub fn parse_create_table(stmt: &Statement) -> CrdtResult<TableSchema> {
             let table_name = object_name_to_string(&create.name);
             let mut columns: Vec<ColumnSchema> = Vec::new();
             let mut foreign_keys: Vec<ForeignKeyDef> = Vec::new();
+            let mut unique_constraints: Vec<UniqueConstraintDef> = Vec::new();
             let mut table_pk: Option<Vec<String>> = None;
+            // Single-column UNIQUE table constraints (applied after column parsing)
+            let mut table_unique_single: Vec<String> = Vec::new();
 
             // Collect table-level constraints first
             for constraint in &create.constraints {
@@ -46,6 +52,19 @@ pub fn parse_create_table(stmt: &Statement) -> CrdtResult<TableSchema> {
                             ref_column: ref_col.value.clone(),
                             on_delete: parse_referential_action(on_delete),
                         });
+                    }
+                    TableConstraint::Unique {
+                        columns: uniq_cols, ..
+                    } => {
+                        let col_names: Vec<String> =
+                            uniq_cols.iter().map(|c| c.value.clone()).collect();
+                        if col_names.len() == 1 {
+                            // Single-column: mark the column's `unique` flag
+                            table_unique_single.push(col_names.into_iter().next().unwrap());
+                        } else if col_names.len() > 1 {
+                            // Multi-column composite constraint
+                            unique_constraints.push(UniqueConstraintDef { columns: col_names });
+                        }
                     }
                     _ => {}
                 }
@@ -110,6 +129,11 @@ pub fn parse_create_table(stmt: &Statement) -> CrdtResult<TableSchema> {
                     }
                 }
 
+                // Apply table-level single-column UNIQUE constraints
+                if table_unique_single.contains(&col_name) {
+                    unique = true;
+                }
+
                 columns.push(ColumnSchema {
                     name: col_name,
                     data_type,
@@ -125,6 +149,7 @@ pub fn parse_create_table(stmt: &Statement) -> CrdtResult<TableSchema> {
                 columns,
                 foreign_keys,
                 indexes: vec![],
+                unique_constraints,
             })
         }
         _ => Err(CrdtError::SchemaError(

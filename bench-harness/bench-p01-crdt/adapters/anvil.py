@@ -1,5 +1,5 @@
 """
-Anvil CRDT Engine — Benchmark Adapter
+Anvil CRDT Engine - Benchmark Adapter
 
 Bridges the Anvil Rust engine to the P-01 benchmark harness via subprocess.
 """
@@ -100,7 +100,7 @@ def _substitute_params(sql: str, params: tuple) -> str:
     param_iter = iter(params)
     i = 0
     while i < len(sql):
-        if sql[i] == '?' and (i == 0 or sql[i-1] != "'"):
+        if sql[i] == '?' and (i == 0 or sql[i - 1] != "'"):
             try:
                 val = next(param_iter)
             except StopIteration:

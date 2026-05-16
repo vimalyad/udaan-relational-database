@@ -35,6 +35,17 @@ impl UniquenessRegistry {
         );
 
         if let Some(existing) = self.claims.get_mut(&key) {
+            if existing.owner_row == row_id {
+                // Same row re-claiming the same unique value, usually after an
+                // UPDATE to another column. Keep it as the owner and refresh the
+                // claim version; never record the owner as its own loser.
+                if version > existing.version {
+                    existing.version = version;
+                }
+                existing.losers.retain(|l| l.row_id != row_id);
+                return ClaimResult::Won;
+            }
+
             if version > existing.version {
                 // Challenger wins — demote current owner to loser
                 let old_owner = LooserEntry {
@@ -73,6 +84,21 @@ impl UniquenessRegistry {
             );
             ClaimResult::Won
         }
+    }
+
+    /// Get the full claim record for a unique value (owner + losers).
+    pub fn get_claim(
+        &self,
+        table_id: &str,
+        column_id: &str,
+        value: &str,
+    ) -> Option<&UniquenessClaim> {
+        let key = (
+            table_id.to_string(),
+            column_id.to_string(),
+            value.to_string(),
+        );
+        self.claims.get(&key)
     }
 
     /// Get the canonical owner row for a unique value.

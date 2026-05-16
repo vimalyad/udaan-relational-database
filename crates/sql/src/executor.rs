@@ -5,7 +5,7 @@
 use crate::schema::{object_name_to_string, parse_create_index, parse_create_table};
 use crate::values::{eval_literal, eval_predicate, eval_row_expr};
 use core::error::{CrdtError, CrdtResult};
-use core::types::{Cell, Row, RowId, TableId, Value};
+use core::types::{Cell, FkPolicy, Row, RowId, TableId, Tombstone, Value};
 use index::IndexManager;
 use query::QueryResult;
 use replication::ReplicaState;
@@ -207,7 +207,7 @@ impl SqlExecutor {
                     .insert(col_name.clone(), Cell::new(val.clone(), version.clone()));
             }
 
-            // Uniqueness claims (reservation protocol)
+            // Uniqueness claims — single-column constraints
             for col in schema.unique_columns() {
                 if let Some(val) = cells.get(&col.name) {
                     if *val != Value::Null {
@@ -219,6 +219,19 @@ impl SqlExecutor {
                             version.clone(),
                         );
                     }
+                }
+            }
+
+            // Uniqueness claims — composite multi-column constraints
+            for constraint in schema.composite_unique_constraints() {
+                if let Some(val_key) = constraint.value_key_from_values(&cells) {
+                    replica.uniqueness.claim(
+                        &table_name,
+                        &constraint.constraint_key(),
+                        &val_key,
+                        &row_id,
+                        version.clone(),
+                    );
                 }
             }
 
@@ -311,6 +324,19 @@ impl SqlExecutor {
                     .insert(col_name, Cell::new(new_val, version.clone()));
             }
 
+            // Uniqueness claims — composite constraints (re-file with updated cell state)
+            for constraint in schema.composite_unique_constraints() {
+                if let Some(val_key) = constraint.value_key_from_cells(&updated.cells) {
+                    replica.uniqueness.claim(
+                        &table_name,
+                        &constraint.constraint_key(),
+                        &val_key,
+                        &row_id,
+                        version.clone(),
+                    );
+                }
+            }
+
             indexes.update_row(&table_name, Some(&old_row), &updated);
             replica.storage.upsert_row(&table_name, updated)?;
         }
@@ -362,6 +388,13 @@ impl SqlExecutor {
             indexes.update_row(&table_name, Some(&old_row), &deleted);
             replica.storage.upsert_row(&table_name, deleted)?;
         }
+
+        // 1. FK cascades: propagate deletion to children
+        enforce_fk_cascades(replica);
+        // 2. Tombstone uniqueness losers; cascade-deleted winners may promote their losers
+        enforce_uniqueness_tombstones(replica);
+        // 3. FK cascades again: cascade from newly tombstoned uniqueness losers
+        enforce_fk_cascades(replica);
 
         Ok(QueryResult::empty())
     }
@@ -425,6 +458,7 @@ impl SqlExecutor {
             .iter()
             .map(|c| c.name.clone())
             .collect();
+        let composite_constraints = schema.composite_unique_constraints().to_vec();
 
         // Collect full rows first so ORDER BY can reference any column, even
         // ones not in the SELECT list. Also filter uniqueness losers so SELECT
@@ -441,15 +475,35 @@ impl SqlExecutor {
                 {
                     return false;
                 }
-                // Uniqueness loser filter: hide rows that lost the claim for a unique value
+                // Uniqueness loser filter — single-column constraints
                 for col in &unique_cols {
                     if let Some(cell) = row.cells.get(col) {
-                        let val_str = cell.value.to_string();
-                        if cell.value != Value::Null
-                            && !replica
-                                .uniqueness
-                                .is_owner(&table_name, col, &val_str, &row.id)
-                        {
+                        if cell.value != Value::Null {
+                            let val_str = cell.value.to_string();
+                            if !is_effective_unique_winner(
+                                &replica.uniqueness,
+                                &replica.storage,
+                                &table_name,
+                                col,
+                                &val_str,
+                                &row.id,
+                            ) {
+                                return false;
+                            }
+                        }
+                    }
+                }
+                // Uniqueness loser filter — composite constraints
+                for constraint in &composite_constraints {
+                    if let Some(val_key) = constraint.value_key_from_cells(&row.cells) {
+                        if !is_effective_unique_winner(
+                            &replica.uniqueness,
+                            &replica.storage,
+                            &table_name,
+                            &constraint.constraint_key(),
+                            &val_key,
+                            &row.id,
+                        ) {
                             return false;
                         }
                     }
@@ -529,6 +583,277 @@ impl Default for SqlExecutor {
     }
 }
 
+/// Determine whether a row is the "effective" unique winner for a given constraint key + value.
+///
+/// A row is the effective winner if:
+/// - It is the canonical owner in the uniqueness registry, OR
+/// - The canonical owner is deleted/absent AND this row is the highest-versioned surviving loser.
+///
+/// This handles the "winner-deleted" case: when the winner is tombstoned, the best surviving
+/// loser becomes the new effective winner rather than the value disappearing entirely.
+pub fn is_effective_unique_winner(
+    uniqueness: &crdt::UniquenessRegistry,
+    storage: &storage::StorageEngine,
+    table_id: &str,
+    constraint_key: &str,
+    val_str: &str,
+    row_id: &str,
+) -> bool {
+    let canonical_owner = match uniqueness.owner(table_id, constraint_key, val_str) {
+        None => return true, // No claim at all → this row is the sole occupant
+        Some(o) => o,
+    };
+
+    if canonical_owner == row_id {
+        return true; // This row is the canonical owner
+    }
+
+    // This row is a loser. Only show it if the canonical owner is deleted/gone.
+    let owner_alive = storage
+        .get_row(table_id, canonical_owner)
+        .map(|r| !r.deleted)
+        .unwrap_or(false);
+
+    if owner_alive {
+        return false; // Owner is live → keep this loser hidden
+    }
+
+    // Owner is deleted. Among surviving losers, the highest-versioned one wins.
+    let claim = match uniqueness.get_claim(table_id, constraint_key, val_str) {
+        Some(c) => c,
+        None => return true,
+    };
+
+    let my_version = match claim.losers.iter().find(|l| l.row_id == row_id) {
+        Some(l) => &l.version,
+        None => return false, // Not in losers list → shouldn't be visible
+    };
+
+    // Check whether any other alive loser has a strictly higher version
+    !claim
+        .losers
+        .iter()
+        .filter(|l| l.row_id != row_id)
+        .filter(|l| {
+            storage
+                .get_row(table_id, &l.row_id)
+                .map(|r| !r.deleted)
+                .unwrap_or(false)
+        })
+        .any(|l| l.version > *my_version)
+}
+
+/// Orphan every uniqueness-loser row by setting its conflicting unique column(s) to NULL.
+///
+/// After every sync, the uniqueness registry may designate some rows as losers. Rather than
+/// tombstoning them (which makes them invisible and triggers unintended FK cascades), we set the
+/// unique column(s) to NULL. The row remains alive and visible in snapshot_state / SELECT,
+/// satisfying data-preservation. The existing NULL guard in both filters skips the uniqueness
+/// check for NULL values, so uniqueness is still enforced for non-NULL entries.
+///
+/// Exception: when the canonical owner is already deleted/tombstoned, the best surviving loser
+/// is promoted to effective winner (via `is_effective_unique_winner`) and must NOT be orphaned —
+/// it keeps its original unique column value and becomes the new visible owner.
+///
+/// Idempotent: rows already orphaned (unique col already NULL) are skipped.
+pub fn enforce_uniqueness_tombstones(replica: &mut replication::ReplicaState) {
+    let all_claims: Vec<core::types::UniquenessClaim> =
+        replica.uniqueness.all_claims().cloned().collect();
+
+    for claim in &all_claims {
+        let owner_alive = replica
+            .storage
+            .get_row(&claim.table_id, &claim.owner_row)
+            .map(|r| !r.deleted)
+            .unwrap_or(false);
+
+        for loser in &claim.losers {
+            if let Some(row) = replica
+                .storage
+                .get_row(&claim.table_id, &loser.row_id)
+                .cloned()
+            {
+                if !row.deleted {
+                    // Preserve the effective winner when the canonical owner is dead.
+                    if !owner_alive
+                        && is_effective_unique_winner(
+                            &replica.uniqueness,
+                            &replica.storage,
+                            &claim.table_id,
+                            &claim.column_id,
+                            &claim.value,
+                            &loser.row_id,
+                        )
+                    {
+                        continue;
+                    }
+
+                    // column_id is either a single column name or a composite key
+                    // (individual column names joined by '\x1f').
+                    let cols: Vec<&str> = claim.column_id.split('\x1f').collect();
+
+                    // Skip if all conflicting columns are already NULL (idempotent).
+                    let needs_update = cols.iter().any(|col| {
+                        row.cells
+                            .get(*col)
+                            .map(|c| c.value != Value::Null)
+                            .unwrap_or(false)
+                    });
+                    if !needs_update {
+                        continue;
+                    }
+
+                    let version = replica.clock.tick();
+                    core::utils::frontier_update(
+                        &mut replica.frontier,
+                        &replica.peer_id,
+                        version.counter,
+                    );
+                    let mut orphaned_row = row;
+                    for col in &cols {
+                        if let Some(cell) = orphaned_row.cells.get_mut(*col) {
+                            if cell.value != Value::Null {
+                                cell.value = Value::Null;
+                                cell.version = version.clone();
+                            }
+                        }
+                    }
+                    let _ = replica.storage.upsert_row(&claim.table_id, orphaned_row);
+                }
+            }
+        }
+    }
+}
+
+/// Apply FK policies (Cascade / Orphan) for all tombstoned rows.
+///
+/// This function scans every table for tombstoned rows and propagates the declared FK
+/// policy to child tables. It loops until no further changes occur, handling multi-level
+/// cascade chains (grandchildren, great-grandchildren, etc.).
+///
+/// Idempotent: rows already tombstoned or already NULL'd are no-ops.
+pub fn enforce_fk_cascades(replica: &mut replication::ReplicaState) {
+    let tables: Vec<String> = replica.schemas.table_names();
+
+    let mut had_change = true;
+    while had_change {
+        had_change = false;
+
+        for parent_table in &tables {
+            // Collect tombstoned row IDs in this table along with the delete
+            // version. Cascades are causal: a parent delete cascades child
+            // references that are not newer than the delete, but it must not
+            // erase a concurrent/newer child write discovered during merge.
+            let tombstoned: BTreeMap<String, core::types::Version> = replica
+                .storage
+                .all_rows(parent_table)
+                .filter(|r| r.deleted)
+                .filter_map(|r| {
+                    r.delete_version
+                        .as_ref()
+                        .map(|version| (r.id.clone(), version.clone()))
+                })
+                .collect();
+
+            if tombstoned.is_empty() {
+                continue;
+            }
+
+            // Check every other table for FK references pointing here
+            for child_table in &tables {
+                let child_schema = match replica.schemas.get(child_table).cloned() {
+                    Some(s) => s,
+                    None => continue,
+                };
+
+                for fk in child_schema
+                    .foreign_keys
+                    .iter()
+                    .filter(|fk| &fk.ref_table == parent_table)
+                {
+                    let fk_col = fk.column.clone();
+                    let policy = fk.on_delete.clone();
+
+                    // Find visible child rows whose FK column value is in the tombstoned set
+                    let affected: Vec<String> = replica
+                        .storage
+                        .visible_rows(child_table)
+                        .filter(|row| {
+                            let Some(cell) = row.cells.get(&fk_col) else {
+                                return false;
+                            };
+                            let Some(delete_version) = tombstoned.get(&cell.value.to_string())
+                            else {
+                                return false;
+                            };
+                            cell.version.peer_id == delete_version.peer_id
+                                && cell.version.counter <= delete_version.counter
+                                || cell.version.peer_id != delete_version.peer_id
+                                    && cell.version.counter < delete_version.counter
+                        })
+                        .map(|r| r.id.clone())
+                        .collect();
+
+                    if affected.is_empty() {
+                        continue;
+                    }
+
+                    match policy {
+                        FkPolicy::Cascade => {
+                            let version = replica.clock.tick();
+                            core::utils::frontier_update(
+                                &mut replica.frontier,
+                                &replica.peer_id,
+                                version.counter,
+                            );
+                            for child_id in &affected {
+                                if let Some(row) =
+                                    replica.storage.get_row(child_table, child_id).cloned()
+                                {
+                                    let mut del = row;
+                                    del.deleted = true;
+                                    del.delete_version = Some(version.clone());
+                                    let _ = replica.storage.upsert_row(child_table, del);
+                                    replica.tombstones.insert(Tombstone {
+                                        row_id: child_id.clone(),
+                                        table_id: child_table.clone(),
+                                        version: version.clone(),
+                                    });
+                                    had_change = true;
+                                }
+                            }
+                        }
+                        FkPolicy::Orphan => {
+                            let version = replica.clock.tick();
+                            core::utils::frontier_update(
+                                &mut replica.frontier,
+                                &replica.peer_id,
+                                version.counter,
+                            );
+                            for child_id in &affected {
+                                if let Some(row) =
+                                    replica.storage.get_row(child_table, child_id).cloned()
+                                {
+                                    let mut upd = row;
+                                    upd.cells.insert(
+                                        fk_col.clone(),
+                                        Cell::new(Value::Null, version.clone()),
+                                    );
+                                    let _ = replica.storage.upsert_row(child_table, upd);
+                                    had_change = true;
+                                }
+                            }
+                        }
+                        FkPolicy::Tombstone => {
+                            // Child survives with orphaned FK reference — no action needed
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn get_delete_table_name(delete: &ast::Delete) -> CrdtResult<TableId> {
     // sqlparser 0.54: Delete.from is FromTable enum
     match &delete.from {
@@ -596,6 +921,7 @@ mod tests {
             ],
             foreign_keys: vec![],
             indexes: vec![],
+            unique_constraints: vec![],
         };
         replica.schemas.create_table(users_schema).unwrap();
         replica.storage.create_table("users");
@@ -643,6 +969,7 @@ mod tests {
                 on_delete: FkPolicy::Tombstone,
             }],
             indexes: vec![],
+            unique_constraints: vec![],
         };
         replica.schemas.create_table(orders_schema).unwrap();
         replica.storage.create_table("orders");
